@@ -1218,7 +1218,7 @@ function MultiplayerGame({ game, table, tableId, customerId, onBack, initialInvi
 }
 
 function TableQrModal({ onClose }) {
-  const [baseUrl, setBaseUrl] = useState(import.meta.env.VITE_PUBLIC_APP_URL || window.location.origin)
+  const [baseUrl, setBaseUrl] = useState(window.location.origin)
   const [cards, setCards] = useState([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')

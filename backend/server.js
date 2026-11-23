@@ -12,16 +12,26 @@ import { applyTurnMove, createTurnGameState, scoreDuelGames, supportedGames } fr
 
 const app = express()
 const httpServer = http.createServer(app)
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
+const configuredOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean)
+const allowedOrigins = [...new Set([
+  ...configuredOrigins,
+  'https://dineplay-restaurant.vercel.app',
+])]
+const corsOptions = {
+  origin: allowedOrigins,
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  credentials: true,
+}
 const io = new SocketServer(httpServer, {
-  cors: { origin: allowedOrigins, methods: ['GET', 'POST', 'PATCH', 'DELETE'], credentials: true },
+  cors: corsOptions,
 })
 const gameRooms = new Map()
 
-app.use(cors({ origin: allowedOrigins, credentials: true }))
+app.options('*', cors(corsOptions))
+app.use(cors(corsOptions))
 app.use(express.json({ limit: '1mb' }))
 
 const menuDetailsByName = new Map(bundledMenu.map((item) => [item.name.toLowerCase(), item]))
