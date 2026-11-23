@@ -46,11 +46,16 @@ From this `backend` folder:
    `cart_items`, `order_details`, `waiter_calls`, and `session_payment_meta`
    tables needed for the current multi-customer UI.
 
-4. Seed the 110 frontend menu dishes and Tables 1–10 (safe to run again):
+4. Seed 200 menu dishes across the 10 menu categories and Tables 1–20:
 
    ```sh
    npm run seed
    ```
+
+   The seed combines the 110 frontend dishes with 90 additional dishes in
+   `seed/additionalDishes.js`. It upserts menu rows by their unique name and
+   tables by `table_number`, so it is safe to rerun and refreshes the seeded
+   menu fields without resetting table status or existing service sessions.
 
 5. Start the API and Socket.IO server:
 
@@ -134,6 +139,7 @@ All routes use the `/api` prefix. Errors return `{ "message": "..." }`.
 | GET | `/health` | Public; checks MySQL |
 | GET | `/menu?search=&category=&vegOnly=true&bestsellersOnly=true` | Public |
 | GET | `/tables` | Public; normalized tables, guests, carts, orders, calls, and totals |
+| GET | `/revenue/today` | Staff JWT; approved bills settled today, including closed tables |
 | POST | `/sessions/join` | Public; `{ tableNumber, customerName, customerPhone? }` |
 | DELETE | `/sessions/:sessionId/guests/:guestId` | Public; removes the guest, preserving open orders/bills |
 | POST | `/tables/:tableNumber/cart` | Public; add an item by menu key |
@@ -183,6 +189,12 @@ clears their unsent cart, but keeps placed orders and the open table bill.
   manager approval route sets `is_paid` and the official `Paid` state. Connect
   and verify a real payment gateway before treating a bill as financially
   settled.
+- The staff revenue summary includes only sessions with `is_paid = 1` and
+  `payment_status = 'Paid'`, filtered by `session_payment_meta.paid_at` (falling
+  back to `payment_approved_at`) against MariaDB's `CURDATE()`. The database
+  server's timezone therefore defines the business day. Revenue is calculated
+  from persisted order subtotals with the dessert reward discount and 5% GST,
+  and remains available after a table is closed.
 - Today's Special is derived deterministically from the current date and
   seeded menu, so it rotates daily without a database write or manual reset.
 - This initial server is for a single restaurant/database. Add tenant scoping,

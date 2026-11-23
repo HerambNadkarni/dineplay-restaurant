@@ -44,6 +44,10 @@ export async function fetchTables({ token } = {}) {
   return request('/tables', { token })
 }
 
+export async function fetchTodayRevenue(token) {
+  return request('/revenue/today', { token })
+}
+
 export async function createSession(tableId, { name, phone = '' }) {
   return request('/sessions/join', {
     method: 'POST',

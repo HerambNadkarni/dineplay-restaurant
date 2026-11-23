@@ -1340,6 +1340,8 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
   const { tables, updateOrderStatus, resolveCall, approvePayment } = useRestaurant()
   const [tab, setTab] = useState('floor')
   const [showQrCodes, setShowQrCodes] = useState(false)
+  const [todayRevenue, setTodayRevenue] = useState(null)
+  const [revenueError, setRevenueError] = useState('')
   const safeTables = Array.isArray(tables) ? tables.filter(Boolean) : []
   const allOrders = safeTables.flatMap((table) => (Array.isArray(table.orders) ? table.orders : [])
     .filter(Boolean)
@@ -1351,6 +1353,40 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
   const openCalls = calls.length
   const special = getTodaysSpecial(menu, new Date(now))
 
+  useEffect(() => {
+    let active = true
+    let refreshTimer
+    let latestRevenueRequest = 0
+    const refreshRevenue = async () => {
+      const requestNumber = ++latestRevenueRequest
+      try {
+        const summary = await api.fetchTodayRevenue(staffSession?.token)
+        if (!active || requestNumber !== latestRevenueRequest) return
+        setTodayRevenue(Number(summary?.revenue) || 0)
+        setRevenueError('')
+      } catch (error) {
+        if (!active || requestNumber !== latestRevenueRequest) return
+        setTodayRevenue(null)
+        setRevenueError(error.message || 'Today’s revenue could not be loaded.')
+      }
+    }
+    const scheduleRevenueRefresh = () => {
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(refreshRevenue, 100)
+    }
+    const socket = api.connectLiveUpdates()
+    socket.on('connect', refreshRevenue)
+    socket.on('payment:approved', scheduleRevenueRefresh)
+    refreshRevenue()
+    return () => {
+      active = false
+      clearTimeout(refreshTimer)
+      socket.off('connect', refreshRevenue)
+      socket.off('payment:approved', scheduleRevenueRefresh)
+      socket.disconnect()
+    }
+  }, [staffSession?.token])
+
   return (
     <main className="admin-layout">
       <header className="admin-topbar"><div className="brand"><span className="brand-mark">D<span>·</span></span><span>Dine<span>Play</span></span><i className="admin-label">STAFF CONSOLE</i></div><div className="admin-top-right"><span className="live-badge"><i /> RESTAURANT API</span><button className="table-qr-trigger" onClick={() => setShowQrCodes(true)}><QrCode size={15} /><span>Table QR codes</span></button><span className="staff-avatar">{staffSession?.staff?.fullName?.charAt(0)?.toUpperCase() || 'S'}</span><span>{staffSession?.staff?.fullName || staffSession?.staff?.role || 'Staff'}</span><button className="lock-staff-button" onClick={onLock}><LogOut size={14} /> Lock staff view</button></div></header>
@@ -1361,7 +1397,7 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
           <StatCard label="TABLES IN SERVICE" value={`${safeTables.filter((table) => (table.customers ?? []).length || (table.orders ?? []).length).length}/10`} icon={<Utensils size={16} />} tone="stat-amber" detail="Tables with activity" />
           <StatCard label="ACTIVE ORDERS" value={queue.length} icon={<ChefHat size={16} />} tone="stat-blue" detail="In the kitchen queue" />
           <StatCard label="WAITER CALLS" value={openCalls} icon={<Bell size={16} />} tone={openCalls ? 'stat-red' : 'stat-mint'} detail={openCalls ? 'Needs your attention' : 'All caught up'} />
-          <StatCard label="TODAY'S REVENUE" value={money(safeTables.filter((table) => table.payment?.status === 'Paid').reduce((sum, table) => sum + getTableTotal(table).total, 0))} icon={<Sparkles size={16} />} tone="stat-purple" detail="Manager-approved tables" />
+          <StatCard label="TODAY'S REVENUE" value={todayRevenue === null ? '—' : money(todayRevenue)} icon={<Sparkles size={16} />} tone="stat-purple" detail={revenueError || 'Manager-approved bills settled today'} />
         </div>
         <div className="admin-tabs">
           <button className={tab === 'floor' ? 'active' : ''} onClick={() => setTab('floor')}><MapPin size={15} /> Floor map <span>10</span></button>

@@ -392,6 +392,48 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
   res.json({ status: 'ok', database: process.env.DB_NAME || 'dineplay' })
 }))
 
+app.get('/api/revenue/today', authRequired, asyncRoute(async (_req, res) => {
+  const [rows] = await pool.query(
+    `SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS businessDate,
+            COALESCE(SUM(paid_sessions.grand_total), 0) AS revenue,
+            COUNT(*) AS paidBills
+       FROM (
+         SELECT ts.id,
+                COALESCE(order_totals.subtotal, 0)
+                  - ROUND(COALESCE(dessert_totals.subtotal, 0) * ts.discount_percent / 100, 0)
+                  + ROUND(
+                      (COALESCE(order_totals.subtotal, 0)
+                        - ROUND(COALESCE(dessert_totals.subtotal, 0) * ts.discount_percent / 100, 0))
+                      * 0.05,
+                      0
+                    ) AS grand_total
+           FROM table_sessions ts
+           LEFT JOIN (
+             SELECT session_id, SUM(subtotal) AS subtotal
+               FROM orders
+              GROUP BY session_id
+           ) order_totals ON order_totals.session_id = ts.id
+           LEFT JOIN (
+             SELECT o.session_id, SUM(oi.unit_price * oi.quantity) AS subtotal
+               FROM orders o
+               JOIN order_items oi ON oi.order_id = o.id
+               JOIN menu_items mi ON mi.id = oi.menu_item_id
+              WHERE LOWER(mi.category) LIKE '%dessert%'
+              GROUP BY o.session_id
+           ) dessert_totals ON dessert_totals.session_id = ts.id
+           LEFT JOIN session_payment_meta payment_meta ON payment_meta.session_id = ts.id
+          WHERE ts.is_paid = 1
+            AND ts.payment_status = 'Paid'
+            AND DATE(COALESCE(payment_meta.paid_at, ts.payment_approved_at)) = CURDATE()
+       ) paid_sessions`,
+  )
+  res.json({
+    businessDate: rows[0].businessDate,
+    revenue: Number(rows[0].revenue) || 0,
+    paidBills: Number(rows[0].paidBills) || 0,
+  })
+}))
+
 app.get('/api/menu', asyncRoute(async (req, res) => {
   const filters = []
   const values = []
