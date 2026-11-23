@@ -5,6 +5,22 @@ import * as api from '../services/api'
 
 const RestaurantContext = createContext(null)
 
+function normalizeMenuItems(items) {
+  return items.filter((item) => item && typeof item === 'object').map((item) => ({
+    ...item,
+    id: String(item.id ?? ''),
+    name: String(item.name || 'Menu item'),
+    emoji: String(item.emoji || '🍽️'),
+    category: String(item.category || ''),
+    description: String(item.description || ''),
+    price: Number(item.price) || 0,
+    type: item.type === 'Non-Veg' ? 'Non-Veg' : 'Veg',
+    spice: ['Mild', 'Medium', 'Spicy'].includes(item.spice) ? item.spice : 'Mild',
+    prepMinutes: Number(item.prepMinutes) || 15,
+    popular: Boolean(item.popular),
+  }))
+}
+
 function normalizeTableRows(rows) {
   const rowsById = new Map(
     (Array.isArray(rows) ? rows : [])
@@ -35,6 +51,7 @@ function normalizeTableRows(rows) {
           item: {
             ...line.item,
             name: String(line.item.name || 'Menu item'),
+            emoji: String(line.item.emoji || '🍽️'),
             price: Number(line.item.price) || 0,
             category: String(line.item.category || ''),
           },
@@ -91,7 +108,7 @@ export function RestaurantProvider({ children }) {
     api.fetchMenu()
       .then((items) => {
         if (!Array.isArray(items)) throw new Error('The restaurant API returned an invalid menu response.')
-        setMenu(items)
+        setMenu(normalizeMenuItems(items))
       })
       .catch((error) => setLastError(error.message))
   }, [refreshTables])
@@ -116,7 +133,7 @@ export function RestaurantProvider({ children }) {
           if (!Array.isArray(updatedTables) || !Array.isArray(items)) {
             throw new Error('The restaurant API returned an invalid response.')
           }
-          setMenu(items)
+          setMenu(normalizeMenuItems(items))
           setLastError('')
         })
         .catch((error) => setLastError(error instanceof Error ? error.message : 'Could not load restaurant data.'))

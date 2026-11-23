@@ -37,9 +37,10 @@ const orderStatusLabel = (status) => status === 'Received'
     : status || 'Order Received'
 const orderStatusClass = (status) => (status || 'Received').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 const getTodaysSpecial = (items, date = new Date()) => {
-  if (!items.length) return null
+  const availableItems = Array.isArray(items) ? items.filter((item) => item && typeof item === 'object') : []
+  if (!availableItems.length) return null
   const day = Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000)
-  return items[((day % items.length) + items.length) % items.length]
+  return availableItems[((day % availableItems.length) + availableItems.length) % availableItems.length] || null
 }
 const formatSpecialDate = (date) => new Intl.DateTimeFormat('en-IN', {
   day: 'numeric',
@@ -525,7 +526,7 @@ function CustomerView({ table, customer, customerId, tableId, screen, setScreen,
 function CustomerHub({ table, customer, kitchenMinutes, navigation, onNavigate, now, menu }) {
   const { addToCart } = useRestaurant()
   const currentOrders = table.orders.filter((order) => order.customerId === customer.id)
-  const featured = menu.find((item) => item.popular)
+  const featured = (Array.isArray(menu) ? menu : []).find((item) => item?.popular)
   const special = getTodaysSpecial(menu, new Date(now))
   const specialDate = formatSpecialDate(new Date(now))
   const fullName = customer.name || 'Guest'
@@ -592,9 +593,9 @@ function CustomerHub({ table, customer, kitchenMinutes, navigation, onNavigate, 
         <div className="feature-dessert"><span>🍰</span><i>5%<small>OFF</small></i></div>
         <span className="feature-spark spark-a">✳</span><span className="feature-spark spark-b">✦</span>
       </section>
-      <div className="hub-recommendation">
-        <span className="recommendation-label">HOUSE FAVOURITE</span><span>{featured.emoji}</span><b>{featured.name}</b><span>{money(featured.price)}</span>
-      </div>
+      {featured && <div className="hub-recommendation">
+        <span className="recommendation-label">HOUSE FAVOURITE</span><span>{featured.emoji || '🍽️'}</span><b>{featured.name || 'House favourite'}</b><span>{money(featured.price)}</span>
+      </div>}
       <div className="service-note"><span className="online-dot"><i /></span> Need a hand? Your server is just a tap away.</div>
     </div>
   )
@@ -656,7 +657,7 @@ function MenuScreen({ table, customer, customerId, menu, now, onOpenPlate }) {
               return (
                 <article className={`menu-row ${special?.id === item.id ? 'today-special-item' : ''}`} key={item.id}>
                   <span className={`diet-mark ${item.type === 'Veg' ? 'is-veg' : 'is-nonveg'}`} aria-label={item.type} title={item.type} />
-                  <div className="menu-row-emoji">{item.emoji}</div>
+                  <div className="menu-row-emoji">{item?.emoji || '🍽️'}</div>
                   <div className="menu-row-copy">
                     <div className="menu-row-name"><h3>{item.name}</h3>{special?.id === item.id && <span className="today-special-tag">TODAY’S SPECIAL</span>}{item.popular && <span className="bestseller-tag">★ BESTSELLER</span>}</div>
                     <p>{item.description}</p>
@@ -722,7 +723,7 @@ function PlateScreen({ table, customer, now }) {
             {cart.length ? <>
               <div className="cart-list">{cart.map((line) => (
                 <div className="cart-row" key={line.id}>
-                  <span className="cart-emoji">{line.item.emoji}</span>
+                  <span className="cart-emoji">{line.item?.emoji || '🍽️'}</span>
                   <div className="cart-item-copy"><b>{line.item.name}</b><span>{money(line.item.price)} each</span><input aria-label={`Cooking note for ${line.item.name}`} placeholder="Cooking note..." value={line.note} onChange={(event) => updateCartLine(table.id, line.id, line.quantity, event.target.value)} /></div>
                   <div className="qty-control"><button aria-label="Decrease quantity" onClick={() => updateCartLine(table.id, line.id, line.quantity - 1)}><Minus size={13} /></button><b>{line.quantity}</b><button aria-label="Increase quantity" onClick={() => updateCartLine(table.id, line.id, line.quantity + 1)}><Plus size={13} /></button></div>
                   <strong>{money(line.item.price * line.quantity)}</strong>
