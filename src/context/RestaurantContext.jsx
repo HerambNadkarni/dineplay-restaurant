@@ -5,6 +5,62 @@ import * as api from '../services/api'
 
 const RestaurantContext = createContext(null)
 
+function normalizeTableRows(rows) {
+  const rowsById = new Map(
+    (Array.isArray(rows) ? rows : [])
+      .filter(Boolean)
+      .map((row) => [String(row.id ?? row.tableNumber ?? '').padStart(2, '0'), row]),
+  )
+
+  return initialTables().map((emptyTable) => {
+    const row = rowsById.get(emptyTable.id)
+    if (!row) return emptyTable
+
+    return {
+      ...emptyTable,
+      ...row,
+      id: emptyTable.id,
+      customers: Array.isArray(row.customers)
+        ? row.customers.filter(Boolean).map((guest) => ({
+          ...guest,
+          id: String(guest.id ?? ''),
+          name: String(guest.name || 'Guest'),
+          phone: guest.phone || '',
+        }))
+        : [],
+      cart: Array.isArray(row.cart)
+        ? row.cart.filter((line) => line && line.item).map((line) => ({
+          ...line,
+          quantity: Number(line.quantity) || 0,
+          item: {
+            ...line.item,
+            name: String(line.item.name || 'Menu item'),
+            price: Number(line.item.price) || 0,
+            category: String(line.item.category || ''),
+          },
+        }))
+        : [],
+      orders: Array.isArray(row.orders)
+        ? row.orders.filter(Boolean).map((order) => ({
+          ...order,
+          status: String(order.status || 'Received'),
+          customerName: String(order.customerName || 'Guest'),
+          createdAt: Number(order.createdAt) || 0,
+          items: Array.isArray(order.items)
+            ? order.items.filter(Boolean).map((item) => ({
+              ...item,
+              name: String(item.name || 'Menu item'),
+              price: Number(item.price) || 0,
+              quantity: Number(item.quantity) || 0,
+            }))
+            : [],
+        }))
+        : [],
+      calls: Array.isArray(row.calls) ? row.calls.filter(Boolean) : [],
+    }
+  })
+}
+
 export function RestaurantProvider({ children }) {
   const [tables, setTables] = useState(initialTables())
   const [tablesLoaded, setTablesLoaded] = useState(false)
@@ -16,8 +72,9 @@ export function RestaurantProvider({ children }) {
 
   const refreshTables = useCallback(async (token) => {
     const requestId = ++tableRequestSequence.current
-    const updatedTables = await api.fetchTables({ token })
-    if (!Array.isArray(updatedTables)) throw new Error('The restaurant API returned an invalid tables response.')
+    const responseTables = await api.fetchTables({ token })
+    if (!Array.isArray(responseTables)) throw new Error('The restaurant API returned an invalid tables response.')
+    const updatedTables = normalizeTableRows(responseTables)
     if (requestId > latestAppliedTableRequest.current) {
       latestAppliedTableRequest.current = requestId
       setTables(updatedTables)

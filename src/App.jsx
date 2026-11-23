@@ -7,6 +7,7 @@ import {
 import QRCode from 'qrcode'
 import { menuCategories } from './data/menuData'
 import { gameSettings } from './data/games'
+import { initialTables } from './data/restaurant'
 import { createTableQrLinks } from './data/tableQr'
 import { GameBoard, PassPlayGame } from './components/TurnBasedGames'
 import { useRestaurant } from './context/RestaurantContext'
@@ -15,8 +16,9 @@ import * as api from './services/api'
 const money = (amount) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(amount || 0)
 
-const activeCalls = (table) => table.calls.filter((call) => !call.resolved)
-const activeOrders = (table) => table.orders.filter((order) => order.status !== 'Confirmed Served')
+const EMPTY_TABLES = initialTables()
+const activeCalls = (table) => (Array.isArray(table?.calls) ? table.calls : []).filter((call) => call && !call.resolved)
+const activeOrders = (table) => (Array.isArray(table?.orders) ? table.orders : []).filter((order) => order && order.status !== 'Confirmed Served')
 const formatCooldown = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 const readStoredGuest = () => {
   try {
@@ -32,8 +34,8 @@ const orderStatusLabel = (status) => status === 'Received'
   ? 'Order Received'
   : status === 'Awaiting Confirmation'
     ? 'Served — Awaiting Your Confirmation'
-    : status
-const orderStatusClass = (status) => status.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    : status || 'Order Received'
+const orderStatusClass = (status) => (status || 'Received').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 const getTodaysSpecial = (items, date = new Date()) => {
   if (!items.length) return null
   const day = Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000)
@@ -58,7 +60,7 @@ const validateGuestPhone = (phone) => {
     : 'Enter a valid 10-digit phone number, optionally with +91.'
 }
 const getTableTotal = (table) => {
-  if (table.bill) {
+  if (table?.bill) {
     return {
       subtotal: Number(table.bill.subtotal) || 0,
       discount: Number(table.bill.discount) || 0,
@@ -66,16 +68,23 @@ const getTableTotal = (table) => {
       total: Number(table.bill.grandTotal) || 0,
     }
   }
-  const items = [...table.cart, ...table.orders.flatMap((order) => order.items.map((item) => ({ item, quantity: item.quantity })))]
+  const cart = Array.isArray(table?.cart) ? table.cart.filter((line) => line?.item) : []
+  const orders = Array.isArray(table?.orders) ? table.orders.filter(Boolean) : []
+  const items = [...cart, ...orders.flatMap((order) =>
+    (Array.isArray(order.items) ? order.items : [])
+      .filter(Boolean)
+      .map((item) => ({ item, quantity: Number(item.quantity) || 0 })),
+  )]
   const subtotal = items.reduce((sum, line) => sum + line.item.price * line.quantity, 0)
   const dessertValue = items.reduce((sum, line) => sum + (/dessert/i.test(line.item.category) ? line.item.price * line.quantity : 0), 0)
-  const discount = table.coupon ? Math.round(dessertValue * table.coupon.percent / 100) : 0
+  const discount = table?.coupon ? Math.round(dessertValue * table.coupon.percent / 100) : 0
   const gst = Math.round((subtotal - discount) * 0.05)
   return { subtotal, discount, gst, total: subtotal - discount + gst }
 }
 
 function App() {
   const { tables, tablesLoaded, menu, joinTable, leaveTable, waiterCooldowns, lastError, clearError } = useRestaurant()
+  const tableList = Array.isArray(tables) ? tables.filter(Boolean) : EMPTY_TABLES
   const storedGuest = readStoredGuest()
   const requestedTable = new URLSearchParams(window.location.search).get('table')
   const normalizedRequestedTable = requestedTable && /^\d{1,2}$/.test(requestedTable) && Number(requestedTable) >= 1 && Number(requestedTable) <= 10
@@ -97,8 +106,8 @@ function App() {
   const [now, setNow] = useState(Date.now())
   const [adminTableId, setAdminTableId] = useState('')
 
-  const table = tables.find((entry) => entry.id === tableId) || tables[3]
-  const customer = table.customers.find((entry) => entry.id === customerId)
+  const table = tableList.find((entry) => entry.id === tableId) || EMPTY_TABLES[Number(tableId) - 1] || EMPTY_TABLES[3]
+  const customer = (table.customers ?? []).find((entry) => entry.id === customerId)
 
   useEffect(() => {
     if (storedGuest && storedGuest.tableId !== tableId) {
@@ -130,7 +139,9 @@ function App() {
     waiterCooldowns[tableId]?.sessionId === table.sessionId
       ? Number(waiterCooldowns[tableId]?.endsAt) || 0
       : 0,
-    ...table.calls.map((call) => Number(call.createdAt) + 15 * 60 * 1000),
+    ...(Array.isArray(table.calls) ? table.calls : [])
+      .filter((call) => Number(call?.createdAt) > 0)
+      .map((call) => Number(call.createdAt) + 15 * 60 * 1000),
   )
   const cooldown = Math.max(0, Math.ceil((latestCallEnd - now) / 1000))
   const showGuestWarning = (message) => {
@@ -261,7 +272,7 @@ function App() {
           }}
         />
       )}
-      {adminTableId && <TableDetails table={tables.find((entry) => entry.id === adminTableId)} token={staffSession?.token} staffRole={staffSession?.staff?.role} menu={menu} onClose={() => setAdminTableId('')} />}
+      {adminTableId && <TableDetails table={tableList.find((entry) => entry.id === adminTableId)} token={staffSession?.token} staffRole={staffSession?.staff?.role} menu={menu} onClose={() => setAdminTableId('')} />}
       {(lastError || staffMessage) && <div className="app-alert" role="alert"><span>{lastError || staffMessage}</span><button aria-label="Dismiss message" onClick={() => { clearError(); setStaffMessage('') }}><X size={15} /></button></div>}
       <ViewSwitcher mode={mode} setMode={setView} />
     </div>
@@ -761,7 +772,7 @@ function PlateScreen({ table, customer, now }) {
 function GameZone({ table, tableId, customerId, initialInvite, onInviteAccepted }) {
   const [game, setGame] = useState(initialInvite?.game || '')
   const [mode, setMode] = useState(initialInvite ? 'multiplayer' : '')
-  const players = table.customers.filter((player) => player.id !== customerId)
+  const players = (table.customers ?? []).filter((player) => player.id !== customerId)
   const games = [
     { id: 'air-hockey', title: 'Air hockey', icon: '🏒', eyebrow: `FIRST TO ${gameSettings.hockey.goal}`, description: 'A quick table-top rally with a lively arcade puck.', className: 'hockey-card' },
     { id: 'burger-stacker', title: 'Burger stacker', icon: '🍔', eyebrow: `${gameSettings.stacker.durationSeconds} SEC`, description: 'Catch the falling fillings and build a taller burger.', className: 'stack-card' },
@@ -1051,8 +1062,9 @@ function MultiplayerGame({ game, table, tableId, customerId, onBack, initialInvi
   const [invite, setInvite] = useState(null)
   const [error, setError] = useState('')
   const rewardSent = useRef(false)
-  const customer = table.customers.find((entry) => entry.id === customerId)
-  const otherTables = tables.filter((entry) => entry.id !== tableId && entry.customers.length > 0)
+  const customer = (table.customers ?? []).find((entry) => entry.id === customerId)
+  const otherTables = (Array.isArray(tables) ? tables : [])
+    .filter((entry) => entry && entry.id !== tableId && (entry.customers ?? []).length > 0)
   const myIndex = roomState?.players?.findIndex((player) => String(player.customerId) === String(customerId)) ?? -1
   const myTurn = roomState?.status === 'active' && roomState.currentTurn === myIndex
   const displayName = game === 'air-hockey' ? 'hockey' : game === 'burger-stacker' ? 'stacker' : game
@@ -1191,7 +1203,7 @@ function MultiplayerGame({ game, table, tableId, customerId, onBack, initialInvi
       <div className="multiplayer-controls">
         <select aria-label="Challenge a table" value={targetTable} onChange={(event) => setTargetTable(event.target.value)}>
           <option value="">Choose a table to invite (optional)</option>
-          {otherTables.map((entry) => <option key={entry.id} value={entry.id}>Table #{entry.id} · {entry.customers.map((guest) => guest.name).join(', ')}</option>)}
+          {otherTables.map((entry) => <option key={entry.id} value={entry.id}>Table #{entry.id} · {(entry.customers ?? []).map((guest) => guest.name).join(', ')}</option>)}
         </select>
         <button className="primary-button" onClick={createRoom} disabled={!connected}>Create a room</button>
       </div>
@@ -1327,9 +1339,13 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
   const { tables, updateOrderStatus, resolveCall, approvePayment } = useRestaurant()
   const [tab, setTab] = useState('floor')
   const [showQrCodes, setShowQrCodes] = useState(false)
-  const allOrders = tables.flatMap((table) => table.orders.map((order) => ({ ...order, tableId: table.id }))).sort((a, b) => a.createdAt - b.createdAt)
+  const safeTables = Array.isArray(tables) ? tables.filter(Boolean) : []
+  const allOrders = safeTables.flatMap((table) => (Array.isArray(table.orders) ? table.orders : [])
+    .filter(Boolean)
+    .map((order) => ({ ...order, items: Array.isArray(order.items) ? order.items : [], tableId: table.id })))
+    .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0))
   const queue = allOrders.filter((order) => order.status !== 'Confirmed Served')
-  const calls = tables.flatMap((table) => activeCalls(table).map((call) => ({ ...call, tableId: table.id })))
+  const calls = safeTables.flatMap((table) => activeCalls(table).map((call) => ({ ...call, tableId: table.id })))
   const nextStatus = { Received: 'Preparing', Preparing: 'Prepared' }
   const openCalls = calls.length
   const special = getTodaysSpecial(menu, new Date(now))
@@ -1341,10 +1357,10 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
         <div className="admin-welcome"><div><span className="eyebrow">{staffSession?.staff?.role?.toUpperCase() || 'STAFF'} · RESTAURANT CONSOLE</span><h1>Welcome, {staffSession?.staff?.fullName?.split(' ')[0] || 'team'}.</h1><p>Restaurant service data updates in real time.</p></div><div className="admin-date"><span>LOCAL TIME</span><b>{new Date(now).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</b></div></div>
         {special && <div className="admin-today-special"><span>TODAY’S SPECIAL <i /> {formatSpecialDate(new Date(now))}</span><b>{special.emoji} {special.name}</b><strong>{money(special.price)}</strong></div>}
         <div className="stat-grid">
-          <StatCard label="TABLES IN SERVICE" value={`${tables.filter((table) => table.customers.length || table.orders.length).length}/10`} icon={<Utensils size={16} />} tone="stat-amber" detail="Tables with activity" />
+          <StatCard label="TABLES IN SERVICE" value={`${safeTables.filter((table) => (table.customers ?? []).length || (table.orders ?? []).length).length}/10`} icon={<Utensils size={16} />} tone="stat-amber" detail="Tables with activity" />
           <StatCard label="ACTIVE ORDERS" value={queue.length} icon={<ChefHat size={16} />} tone="stat-blue" detail="In the kitchen queue" />
           <StatCard label="WAITER CALLS" value={openCalls} icon={<Bell size={16} />} tone={openCalls ? 'stat-red' : 'stat-mint'} detail={openCalls ? 'Needs your attention' : 'All caught up'} />
-          <StatCard label="TODAY'S REVENUE" value={money(tables.filter((table) => table.payment?.status === 'Paid').reduce((sum, table) => sum + getTableTotal(table).total, 0))} icon={<Sparkles size={16} />} tone="stat-purple" detail="Manager-approved tables" />
+          <StatCard label="TODAY'S REVENUE" value={money(safeTables.filter((table) => table.payment?.status === 'Paid').reduce((sum, table) => sum + getTableTotal(table).total, 0))} icon={<Sparkles size={16} />} tone="stat-purple" detail="Manager-approved tables" />
         </div>
         <div className="admin-tabs">
           <button className={tab === 'floor' ? 'active' : ''} onClick={() => setTab('floor')}><MapPin size={15} /> Floor map <span>10</span></button>
@@ -1352,10 +1368,11 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
           <button className={tab === 'calls' ? 'active' : ''} onClick={() => setTab('calls')}><Bell size={15} /> Waiter calls <span>{openCalls}</span></button>
         </div>
         {tab === 'floor' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">THE RESTAURANT</span><h2>Live floor map</h2><p>Tap any table to see the full picture.</p></div><div className="floor-legend"><span><i className="legend-green" /> Available</span><span><i className="legend-blue" /> Occupied</span><span><i className="legend-amber" /> Order active</span><span><i className="legend-red" /> Calling</span></div></div>
-          <div className="floor-grid">{tables.map((table) => {
+          <div className="floor-grid">{safeTables.map((table) => {
             const calls = activeCalls(table)
             const pendingOrders = activeOrders(table)
-            const isOccupied = table.customers.length > 0 || table.orders.length > 0 || table.cart.length > 0
+            const guests = Array.isArray(table.customers) ? table.customers : []
+            const isOccupied = guests.length > 0 || (table.orders ?? []).length > 0 || (table.cart ?? []).length > 0
             const tone = calls.length ? 'calling' : pendingOrders.length ? 'order-active' : isOccupied ? 'occupied' : 'available'
             const total = getTableTotal(table).total
             return <div className={`floor-card ${tone}`} key={table.id} role="button" tabIndex={0} onClick={() => onInspect(table.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onInspect(table.id) } }}>
@@ -1365,8 +1382,8 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
               {table.payment?.status === 'Pending Manager Approval' && (staffSession?.staff?.role === 'Manager'
                 ? <button className="approve-payment-button floor-approve-payment" onClick={(event) => { event.stopPropagation(); approvePayment(table.id, staffSession?.token) }}><Check size={12} /> Approve payment</button>
                 : <small className="manager-approval-note floor-approval-note">Manager approval required</small>)}
-              {calls.length ? <div className="floor-call"><Bell size={13} /><b>{calls[0].reason}</b><small>{calls[0].customerName} · {timeAgo(calls[0].createdAt, now)}</small><button onClick={(event) => { event.stopPropagation(); resolveCall(table.id, calls[0].id, staffSession?.token) }}><Check size={11} /> Mark resolved</button></div> : isOccupied ? <div className="floor-guest"><span className="mini-avatars">{table.customers.slice(0, 3).map((guest) => <i key={guest.id}>{guest.name[0]}</i>)}</span><b>{table.customers.map((guest) => guest.name).join(', ') || 'Kitchen order'}</b><span className="floor-total">{money(total)}</span></div> : <div className="available-copy"><span>Available</span></div>}
-              <div className="floor-card-bottom"><span>{pendingOrders.length ? `${pendingOrders.length} order${pendingOrders.length === 1 ? '' : 's'} · ${timeAgo(pendingOrders[0].createdAt, now)}` : isOccupied ? `${table.customers.length} guest${table.customers.length === 1 ? '' : 's'} at table` : 'Tap to open table'}</span><ArrowRight size={14} /></div>
+              {calls.length ? <div className="floor-call"><Bell size={13} /><b>{calls[0].reason}</b><small>{calls[0].customerName} · {timeAgo(calls[0].createdAt, now)}</small><button onClick={(event) => { event.stopPropagation(); resolveCall(table.id, calls[0].id, staffSession?.token) }}><Check size={11} /> Mark resolved</button></div> : isOccupied ? <div className="floor-guest"><span className="mini-avatars">{guests.slice(0, 3).map((guest) => <i key={guest.id}>{guest.name?.[0] || 'G'}</i>)}</span><b>{guests.map((guest) => guest.name).join(', ') || 'Kitchen order'}</b><span className="floor-total">{money(total)}</span></div> : <div className="available-copy"><span>Available</span></div>}
+              <div className="floor-card-bottom"><span>{pendingOrders.length ? `${pendingOrders.length} order${pendingOrders.length === 1 ? '' : 's'} · ${timeAgo(pendingOrders[0].createdAt, now)}` : isOccupied ? `${guests.length} guest${guests.length === 1 ? '' : 's'} at table` : 'Tap to open table'}</span><ArrowRight size={14} /></div>
             </div>
           })}</div>
         </section>}
@@ -1391,8 +1408,12 @@ function TableDetails({ table, token, staffRole, menu, onClose }) {
     if (menu.length && !menu.some((item) => item.id === itemId)) setItemId(menu[0].id)
   }, [menu, itemId])
   if (!table) return null
+  const guests = Array.isArray(table.customers) ? table.customers : []
+  const orders = Array.isArray(table.orders) ? table.orders.filter(Boolean) : []
   const totals = getTableTotal(table)
-  const items = table.orders.flatMap((order) => order.items.map((item) => ({ ...item, orderStatus: order.status, orderId: order.id })))
+  const items = orders.flatMap((order) => (Array.isArray(order.items) ? order.items : [])
+    .filter(Boolean)
+    .map((item) => ({ ...item, orderStatus: order.status, orderId: order.id })))
   const nextStatus = { Received: 'Preparing', Preparing: 'Prepared' }
   const closeTable = async () => {
     if (window.confirm(`Close and reset Table #${table.id}? This clears its current guests, orders, and bill.`)) {
@@ -1404,7 +1425,7 @@ function TableDetails({ table, token, staffRole, menu, onClose }) {
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="table-detail-modal" role="dialog" aria-modal="true" aria-labelledby="table-detail-title">
         <div className="modal-top"><div><span className="eyebrow">STAFF TABLE VIEW</span><h2 id="table-detail-title">Table #{table.id}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={19} /></button></div>
-        <div className="detail-guests"><span className="eyebrow">GUESTS</span><p>{table.customers.length ? table.customers.map((guest) => `${guest.name}${guest.phone ? ` · ${guest.phone}` : ''}`).join(', ') : 'No active guests'}</p></div>
+        <div className="detail-guests"><span className="eyebrow">GUESTS</span><p>{guests.length ? guests.map((guest) => `${guest.name || 'Guest'}${guest.phone ? ` · ${guest.phone}` : ''}`).join(', ') : 'No active guests'}</p></div>
         <div className="detail-items"><span className="eyebrow">ITEMIZED ORDERS</span>{items.length ? items.map((item, index) => <div className="detail-item" key={`${item.orderId}-${index}`}><span>{item.quantity}× {item.name}<small>{item.note || item.orderStatus}</small></span><b>{money(item.price * item.quantity)}</b></div>) : <p className="detail-empty">No items ordered yet.</p>}</div>
         <div className="admin-add-item"><label className="eyebrow" htmlFor="admin-add-select">ADD AN ITEM</label><div><select id="admin-add-select" value={itemId} onChange={(event) => setItemId(event.target.value)}>{menu.map((item) => <option key={item.id} value={item.id}>{item.name} · {money(item.price)}</option>)}</select><button disabled={!menu.length} onClick={() => { const item = menu.find((entry) => entry.id === itemId); if (item) addAdminItem(table.id, item, token) }}><Plus size={14} /> Add</button></div></div>
         <div className="detail-total"><span>Live total <small>incl. GST</small></span><b>{money(totals.total)}</b></div>
@@ -1415,7 +1436,7 @@ function TableDetails({ table, token, staffRole, menu, onClose }) {
             ? <button className="approve-payment-button" onClick={() => approvePayment(table.id, token)}><Check size={13} /> Approve payment</button>
             : <small className="manager-approval-note">Manager approval required. Ask a Manager to approve this payment.</small>)}
         </div>
-        {table.orders.some((order) => order.status !== 'Confirmed Served') && <div className="detail-status-actions"><span className="eyebrow">ORDER STATUS</span>{table.orders.filter((order) => order.status !== 'Confirmed Served').map((order) => nextStatus[order.status] ? <button key={order.id} onClick={() => updateOrderStatus(table.id, order.id, nextStatus[order.status], token)}>Move {order.customerName}’s order to {nextStatus[order.status]} <ArrowRight size={13} /></button> : <small className="manager-approval-note">{orderStatusLabel(order.status)}</small>)}</div>}
+        {orders.some((order) => order.status !== 'Confirmed Served') && <div className="detail-status-actions"><span className="eyebrow">ORDER STATUS</span>{orders.filter((order) => order.status !== 'Confirmed Served').map((order) => nextStatus[order.status] ? <button key={order.id} onClick={() => updateOrderStatus(table.id, order.id, nextStatus[order.status], token)}>Move {order.customerName}’s order to {nextStatus[order.status]} <ArrowRight size={13} /></button> : <small className="manager-approval-note">{orderStatusLabel(order.status)}</small>)}</div>}
         {table.payment?.status === 'Pending Manager Approval' && <small className="manager-approval-note">Approve this payment before closing the table.</small>}
         <button className="reset-table-button" disabled={table.payment?.status === 'Pending Manager Approval'} onClick={closeTable}><X size={15} /> Close & reset table</button>
       </div>
