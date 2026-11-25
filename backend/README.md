@@ -140,6 +140,9 @@ All routes use the `/api` prefix. Errors return `{ "message": "..." }`.
 | GET | `/menu?search=&category=&vegOnly=true&bestsellersOnly=true` | Public |
 | GET | `/tables` | Public; normalized tables, guests, carts, orders, calls, and totals |
 | GET | `/revenue/today` | Staff JWT; approved bills settled today, including closed tables |
+| GET, POST | `/sessions/:sessionId/bill` | Public; preview or generate the session's itemized bill |
+| POST | `/feedback` | Public; submit a 1–5 star session rating and comment |
+| GET | `/feedback` | Staff JWT; latest 100 guest feedback entries |
 | POST | `/sessions/join` | Public; `{ tableNumber, customerName, customerPhone? }` |
 | DELETE | `/sessions/:sessionId/guests/:guestId` | Public; removes the guest, preserving open orders/bills |
 | POST | `/tables/:tableNumber/cart` | Public; add an item by menu key |
@@ -162,8 +165,8 @@ Use `Authorization: Bearer <token>` for staff-only routes. Only a staff member
 with the `Manager` role can approve a pending payment. Food is not considered
 served until the guest who placed the order confirms it. The server emits
 `tables:updated`, `orders:updated`, `waiter:called`, `payment:pending`, and
-`payment:approved` Socket.IO events after the corresponding changes; the
-frontend listens and reloads the shared table state.
+`payment:approved`, and `feedback:created` Socket.IO events after the
+corresponding changes; the frontend listens and reloads the shared table state.
 
 The game service uses Socket.IO rooms for `game:create`, `game:join`,
 `game:move`, `game:state`, and `game:rematch`. Turn-based boards and score-duel
@@ -190,11 +193,17 @@ clears their unsent cart, but keeps placed orders and the open table bill.
   and verify a real payment gateway before treating a bill as financially
   settled.
 - The staff revenue summary includes only sessions with `is_paid = 1` and
-  `payment_status = 'Paid'`, filtered by `session_payment_meta.paid_at` (falling
-  back to `payment_approved_at`) against MariaDB's `CURDATE()`. The database
-  server's timezone therefore defines the business day. Revenue is calculated
-  from persisted order subtotals with the dessert reward discount and 5% GST,
-  and remains available after a table is closed.
+  `payment_status = 'Paid'`, filtered by `bills.paid_at` (falling back to
+  `session_payment_meta.paid_at` and then `payment_approved_at`) against
+  MariaDB's `CURDATE()`. Generated bill
+  snapshots are marked pending at payment submission and Paid with a `paid_at`
+  timestamp only after Manager approval; the revenue summary uses the saved
+  grand total and still includes legacy paid sessions without a bill snapshot.
+  The database server's timezone therefore defines the business day. Bill
+  totals use persisted order items, the dessert reward discount, 5% GST, and a
+  currently zero service charge.
+- `bills` and `feedback` are created idempotently by server startup as well as
+  by `sql/schema.sql`. Importing the schema remains the recommended first setup.
 - Today's Special is derived deterministically from the current date and
   seeded menu, so it rotates daily without a database write or manual reset.
 - This initial server is for a single restaurant/database. Add tenant scoping,

@@ -198,3 +198,40 @@ CREATE TABLE IF NOT EXISTS session_payment_meta (
   CONSTRAINT fk_payment_meta_session FOREIGN KEY (session_id) REFERENCES table_sessions (id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS bills (
+  id INT NOT NULL AUTO_INCREMENT,
+  bill_number VARCHAR(40) NOT NULL,
+  session_id INT NOT NULL,
+  table_number INT NOT NULL,
+  subtotal DECIMAL(10, 2) NOT NULL DEFAULT 0,
+  tax_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
+  service_charge DECIMAL(10, 2) NOT NULL DEFAULT 0,
+  discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
+  grand_total DECIMAL(10, 2) NOT NULL DEFAULT 0,
+  payment_status ENUM('Unpaid', 'Pending Manager Approval', 'Paid') NOT NULL DEFAULT 'Unpaid',
+  generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  paid_at DATETIME NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_bills_bill_number (bill_number),
+  UNIQUE KEY uq_bills_session (session_id),
+  KEY idx_bills_table_generated (table_number, generated_at),
+  KEY idx_bills_payment_paid_at (payment_status, paid_at),
+  CONSTRAINT fk_bills_session FOREIGN KEY (session_id) REFERENCES table_sessions (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id INT NOT NULL AUTO_INCREMENT,
+  session_id INT NOT NULL,
+  table_number INT NOT NULL,
+  customer_name VARCHAR(120) NOT NULL,
+  rating TINYINT UNSIGNED NOT NULL,
+  `comment` TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_feedback_created (created_at),
+  KEY idx_feedback_session (session_id),
+  CONSTRAINT fk_feedback_session FOREIGN KEY (session_id) REFERENCES table_sessions (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB;

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown, ArrowLeft, ArrowRight, Bell, Check, ChefHat, ChevronDown, CircleHelp,
   Clock3, Coffee, Eye, EyeOff, Gamepad2, Heart, LockKeyhole, LogOut, MapPin, Minus, Plus, QrCode, Search, ShoppingBag,
-  Sparkles, Utensils, X, Zap,
+  MessageSquareText, Sparkles, Star, Utensils, X, Zap,
 } from 'lucide-react'
 import QRCode from 'qrcode'
 import { menuCategories } from './data/menuData'
@@ -683,6 +683,15 @@ function PlateScreen({ table, customer, now }) {
   const { updateCartLine, placeOrder, confirmOrderServed, payBill } = useRestaurant()
   const [instructions, setInstructions] = useState('')
   const [message, setMessage] = useState('')
+  const [bill, setBill] = useState(null)
+  const [billOpen, setBillOpen] = useState(false)
+  const [billBusy, setBillBusy] = useState(false)
+  const [billError, setBillError] = useState('')
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedbackRating, setFeedbackRating] = useState(5)
+  const [feedbackComment, setFeedbackComment] = useState('')
+  const [feedbackError, setFeedbackError] = useState('')
+  const [feedbackSent, setFeedbackSent] = useState(false)
   const cart = table.cart.filter((line) => line.customerId === customer.id)
   const orders = table.orders.filter((order) => order.customerId === customer.id)
   const totals = getTableTotal(table)
@@ -691,6 +700,7 @@ function PlateScreen({ table, customer, now }) {
   const paymentPaid = payment?.status === 'Paid'
   const allOrdersConfirmed = table.orders.length > 0 && table.orders.every((order) => order.status === 'Confirmed Served')
   const canPay = !payment && !table.cart.length && allOrdersConfirmed
+  const canGenerateBill = table.orders.length > 0 && !table.cart.length && allOrdersConfirmed
   const paymentBlockMessage = !table.orders.length
     ? 'Place an order before paying the bill.'
     : table.cart.length
@@ -705,6 +715,44 @@ function PlateScreen({ table, customer, now }) {
       setMessage('Order sent to the kitchen!')
       window.setTimeout(() => setMessage(''), 2600)
     }
+  }
+  const openBill = async (generate = false) => {
+    setBillBusy(true)
+    setBillError('')
+    try {
+      const currentBill = generate
+        ? await api.generateBill(table.sessionId)
+        : await api.fetchBill(table.sessionId)
+      setBill(currentBill)
+      setBillOpen(true)
+    } catch (error) {
+      setBillError(error.message || 'The bill could not be loaded.')
+    } finally {
+      setBillBusy(false)
+    }
+  }
+  const submitFeedback = async (event) => {
+    event.preventDefault()
+    setFeedbackError('')
+    try {
+      await api.submitFeedback({
+        sessionId: table.sessionId,
+        customerId: customer.id,
+        rating: feedbackRating,
+        comment: feedbackComment,
+      })
+      setFeedbackSent(true)
+      setFeedbackOpen(false)
+      setFeedbackComment('')
+    } catch (error) {
+      setFeedbackError(error.message || 'Your feedback could not be sent. Please try again.')
+    }
+  }
+  const printBill = () => {
+    const cleanup = () => document.body.classList.remove('printing-bill')
+    document.body.classList.add('printing-bill')
+    window.addEventListener('afterprint', cleanup, { once: true })
+    window.print()
   }
   const progressStatus = (status) => status === 'Awaiting Confirmation'
     ? 'served'
@@ -754,6 +802,11 @@ function PlateScreen({ table, customer, now }) {
           {table.coupon && <div className="bill-line discount"><span><Sparkles size={13} /> {table.coupon.label}</span><b>−{money(totals.discount)}</b></div>}
           <div className="bill-line"><span>GST <small>5%</small></span><b>{money(totals.gst)}</b></div>
           <div className="bill-total"><span>Grand total</span><b>{money(totals.total)}</b></div>
+          {canGenerateBill && !paymentPending && !paymentPaid && <button className="bill-action-button" disabled={billBusy} onClick={() => openBill(true)}><ShoppingBag size={15} /> {billBusy ? 'Preparing bill…' : 'Generate itemized bill'}</button>}
+          {(paymentPending || paymentPaid || bill) && <button className="bill-action-button" disabled={billBusy} onClick={() => openBill(false)}><ShoppingBag size={15} /> {billBusy ? 'Loading bill…' : 'View / print bill'}</button>}
+          {(paymentPending || paymentPaid || bill) && !feedbackSent && <button className="feedback-open-button" onClick={() => setFeedbackOpen(true)}><MessageSquareText size={15} /> Add feedback</button>}
+          {feedbackSent && <div className="feedback-thanks"><Check size={14} /> Thanks for sharing your visit with us.</div>}
+          {billError && <p className="payment-block-message" role="alert">{billError}</p>}
           {paymentPending ? <div className="payment-pending-state"><Clock3 size={17} /><div><b>Pending Manager Approval</b><span>Payment submitted via {payment.method}. A manager will confirm it shortly.</span></div></div> : paymentPaid ? <div className="paid-state"><Check size={16} /><div><b>Bill paid</b><span>Approved · Paid via {payment.method}</span></div></div> : (
             <>
               <span className="pay-hint">Choose how you’d like to wrap up.</span>
@@ -766,6 +819,31 @@ function PlateScreen({ table, customer, now }) {
           <div className="bill-footnote"><Sparkles size={13} /> Keep playing for tasty rewards.</div>
         </aside>
       </div>
+      {billOpen && bill && <div className="modal-backdrop bill-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setBillOpen(false) }}>
+        <section className="bill-modal" role="dialog" aria-modal="true" aria-labelledby="generated-bill-title">
+          <div className="bill-modal-heading"><div><span className="eyebrow">DINEPLAY · TABLE #{String(bill.tableNumber).padStart(2, '0')}</span><h2 id="generated-bill-title">Your itemized bill</h2><p>Bill number <b>{bill.billNumber}</b></p></div><button className="icon-button" aria-label="Close bill" onClick={() => setBillOpen(false)}><X size={17} /></button></div>
+          <div className="bill-modal-items">{bill.items.length ? bill.items.map((item, index) => <div className="bill-modal-item" key={`${item.name}-${index}`}><div><b>{item.name}</b>{item.note && <small>{item.note}</small>}<span>{item.quantity} × {money(item.unitPrice)}</span></div><strong>{money(item.total)}</strong></div>) : <p className="empty-bill-message">No ordered items have been added to this bill yet.</p>}</div>
+          <div className="bill-modal-totals">
+            <div><span>Subtotal</span><b>{money(bill.subtotal)}</b></div>
+            {bill.discountAmount > 0 && <div><span>Game reward discount</span><b>−{money(bill.discountAmount)}</b></div>}
+            <div><span>GST</span><b>{money(bill.taxAmount)}</b></div>
+            {bill.serviceCharge > 0 && <div><span>Service charge</span><b>{money(bill.serviceCharge)}</b></div>}
+            <div className="bill-modal-grand-total"><span>Grand total</span><b>{money(bill.grandTotal)}</b></div>
+          </div>
+          <div className="bill-modal-footer"><span className={`bill-modal-status ${bill.paymentStatus.toLowerCase().replaceAll(' ', '-')}`}>{bill.paymentStatus}</span><button className="primary-button" onClick={printBill}><ArrowDown size={15} /> Print bill</button></div>
+        </section>
+      </div>}
+      {feedbackOpen && <div className="modal-backdrop feedback-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setFeedbackOpen(false) }}>
+        <section className="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
+          <div className="bill-modal-heading"><div><span className="eyebrow">A NOTE FOR OUR TEAM</span><h2 id="feedback-title">How was your visit?</h2><p>Your feedback helps us make the next meal better.</p></div><button className="icon-button" aria-label="Close feedback" onClick={() => setFeedbackOpen(false)}><X size={17} /></button></div>
+          <form onSubmit={submitFeedback}>
+            <fieldset className="feedback-rating"><legend>Your rating</legend><div>{[1, 2, 3, 4, 5].map((rating) => <button key={rating} type="button" className={rating <= feedbackRating ? 'selected' : ''} aria-label={`${rating} star${rating === 1 ? '' : 's'}`} aria-pressed={feedbackRating === rating} onClick={() => setFeedbackRating(rating)}><Star size={27} fill={rating <= feedbackRating ? 'currentColor' : 'none'} /></button>)}</div></fieldset>
+            <label className="feedback-comment">Your comment<textarea maxLength={2000} value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} placeholder="Tell us what you enjoyed or what we could improve…" /></label>
+            {feedbackError && <p className="form-error" role="alert">{feedbackError}</p>}
+            <button type="submit" className="primary-button wide"><MessageSquareText size={15} /> Send feedback</button>
+          </form>
+        </section>
+      </div>}
     </section>
   )
 }
@@ -1342,6 +1420,8 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
   const [showQrCodes, setShowQrCodes] = useState(false)
   const [todayRevenue, setTodayRevenue] = useState(null)
   const [revenueError, setRevenueError] = useState('')
+  const [feedbackItems, setFeedbackItems] = useState([])
+  const [feedbackError, setFeedbackError] = useState('')
   const safeTables = Array.isArray(tables) ? tables.filter(Boolean) : []
   const allOrders = safeTables.flatMap((table) => (Array.isArray(table.orders) ? table.orders : [])
     .filter(Boolean)
@@ -1387,6 +1467,41 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
     }
   }, [staffSession?.token])
 
+  useEffect(() => {
+    if (tab !== 'feedback') return undefined
+    let active = true
+    let refreshTimer
+    let latestFeedbackRequest = 0
+    const refreshFeedback = async () => {
+      const requestNumber = ++latestFeedbackRequest
+      try {
+        const items = await api.fetchFeedback(staffSession?.token)
+        if (!active || requestNumber !== latestFeedbackRequest) return
+        if (!Array.isArray(items)) throw new Error('The restaurant API returned an invalid feedback response.')
+        setFeedbackItems(items)
+        setFeedbackError('')
+      } catch (error) {
+        if (!active || requestNumber !== latestFeedbackRequest) return
+        setFeedbackError(error.message || 'Guest feedback could not be loaded.')
+      }
+    }
+    const scheduleRefresh = () => {
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(refreshFeedback, 100)
+    }
+    const socket = api.connectLiveUpdates()
+    socket.on('connect', refreshFeedback)
+    socket.on('feedback:created', scheduleRefresh)
+    refreshFeedback()
+    return () => {
+      active = false
+      clearTimeout(refreshTimer)
+      socket.off('connect', refreshFeedback)
+      socket.off('feedback:created', scheduleRefresh)
+      socket.disconnect()
+    }
+  }, [staffSession?.token, tab])
+
   return (
     <main className="admin-layout">
       <header className="admin-topbar"><div className="brand"><span className="brand-mark">D<span>·</span></span><span>Dine<span>Play</span></span><i className="admin-label">STAFF CONSOLE</i></div><div className="admin-top-right"><span className="live-badge"><i /> RESTAURANT API</span><button className="table-qr-trigger" onClick={() => setShowQrCodes(true)}><QrCode size={15} /><span>Table QR codes</span></button><span className="staff-avatar">{staffSession?.staff?.fullName?.charAt(0)?.toUpperCase() || 'S'}</span><span>{staffSession?.staff?.fullName || staffSession?.staff?.role || 'Staff'}</span><button className="lock-staff-button" onClick={onLock}><LogOut size={14} /> Lock staff view</button></div></header>
@@ -1403,6 +1518,7 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
           <button className={tab === 'floor' ? 'active' : ''} onClick={() => setTab('floor')}><MapPin size={15} /> Floor map <span>10</span></button>
           <button className={tab === 'kitchen' ? 'active' : ''} onClick={() => setTab('kitchen')}><ChefHat size={15} /> Kitchen queue <span>{queue.length}</span></button>
           <button className={tab === 'calls' ? 'active' : ''} onClick={() => setTab('calls')}><Bell size={15} /> Waiter calls <span>{openCalls}</span></button>
+          <button className={tab === 'feedback' ? 'active' : ''} onClick={() => setTab('feedback')}><MessageSquareText size={15} /> Feedback <span>{feedbackItems.length}</span></button>
         </div>
         {tab === 'floor' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">THE RESTAURANT</span><h2>Live floor map</h2><p>Tap any table to see the full picture.</p></div><div className="floor-legend"><span><i className="legend-green" /> Available</span><span><i className="legend-blue" /> Occupied</span><span><i className="legend-amber" /> Order active</span><span><i className="legend-red" /> Calling</span></div></div>
           <div className="floor-grid">{safeTables.map((table) => {
@@ -1428,6 +1544,7 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
           <article className="kitchen-card" key={order.id}><div className="kitchen-card-heading"><div><span className="kitchen-table">TABLE #{order.tableId}</span><h3>{order.customerName}</h3><span>{timeAgo(order.createdAt, now)}</span></div><span className={`status-badge ${orderStatusClass(order.status)}`}>{orderStatusLabel(order.status)}</span></div><div className="kitchen-items">{order.items.map((item, index) => <div key={`${item.id}-${index}`}><span>{item.quantity}× {item.name}</span>{item.note && <small>“{item.note}”</small>}</div>)}</div>{order.instructions && <div className="kitchen-note">Kitchen note: {order.instructions}</div>}{nextStatus[order.status] ? <button className="primary-button" onClick={() => updateOrderStatus(order.tableId, order.id, nextStatus[order.status], staffSession?.token)}>{order.status === 'Received' ? <><ChefHat size={15} /> Start preparing</> : <><Check size={15} /> Mark prepared / ready</>} <ArrowRight size={14} /></button> : <p className="kitchen-waiting-confirmation">Waiting for the customer to confirm the dish was served.</p>}</article>
         ))}</div> : <div className="empty-state"><span>🍳</span><b>Kitchen is all caught up</b><p>New orders will show up here as soon as guests place them.</p></div>}</section>}
         {tab === 'calls' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">GUEST REQUESTS</span><h2>Waiter calls</h2><p>Current guest requests.</p></div></div>{calls.length ? <div className="calls-list">{calls.map((call) => <article className="call-card" key={call.id}><span className="call-icon"><Bell size={18} /></span><div><span className="kitchen-table">TABLE #{call.tableId}</span><h3>{call.reason}</h3><p>{call.customerName} · {timeAgo(call.createdAt, now)}</p></div><button className="resolve-button" onClick={() => resolveCall(call.tableId, call.id, staffSession?.token)}><Check size={14} /> Mark resolved</button></article>)}</div> : <div className="empty-state"><span>🔔</span><b>No active waiter calls</b><p>Guest requests will appear here.</p></div>}</section>}
+        {tab === 'feedback' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">GUEST NOTES</span><h2>Visit feedback</h2><p>Recent ratings and comments from your guests.</p></div></div>{feedbackError && <p className="feedback-list-error" role="alert">{feedbackError}</p>}{feedbackItems.length ? <div className="feedback-list">{feedbackItems.map((item) => <article className="feedback-card" key={item.id}><header><div><span className="kitchen-table">TABLE #{String(item.tableNumber).padStart(2, '0')}</span><h3>{item.customerName || 'Guest'}</h3></div><time>{item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}</time></header><div className="feedback-stars" aria-label={`${item.rating} out of 5 stars`}>{[1, 2, 3, 4, 5].map((star) => <Star key={star} size={14} fill={star <= item.rating ? 'currentColor' : 'none'} />)}</div><p>{item.comment || 'No written comment.'}</p></article>)}</div> : !feedbackError && <div className="empty-state"><span>💬</span><b>No feedback just yet</b><p>Guest comments will appear here after they share their visit.</p></div>}</section>}
       </div>
       {showQrCodes && <TableQrModal onClose={() => setShowQrCodes(false)} />}
     </main>

@@ -366,6 +366,132 @@ async function loadOrders({ sessionId, activeOnly = false } = {}) {
   }))
 }
 
+async function buildSessionBill(connection, session) {
+  const [items] = await connection.query(
+    `SELECT oi.item_name, COALESCE(mi.category, '') AS category,
+            oi.unit_price, oi.quantity, oi.note
+       FROM orders o
+       JOIN order_items oi ON oi.order_id = o.id
+       LEFT JOIN menu_items mi ON mi.id = oi.menu_item_id
+      WHERE o.session_id = ?
+      ORDER BY o.id, oi.id`,
+    [session.id],
+  )
+  const billItems = items.map((item) => ({
+    name: item.item_name,
+    category: item.category,
+    unitPrice: Number(item.unit_price) || 0,
+    quantity: Number(item.quantity) || 0,
+    note: item.note || '',
+    total: (Number(item.unit_price) || 0) * (Number(item.quantity) || 0),
+  }))
+  const subtotal = billItems.reduce((sum, item) => sum + item.total, 0)
+  const dessertSubtotal = billItems.reduce(
+    (sum, item) => sum + (/dessert/i.test(item.category) ? item.total : 0),
+    0,
+  )
+  const discountAmount = Math.round(dessertSubtotal * Number(session.discount_percent || 0) / 100)
+  const taxAmount = Math.round((subtotal - discountAmount) * 0.05)
+  const serviceCharge = 0
+  return {
+    billNumber: `DINE-${String(session.id).padStart(8, '0')}`,
+    sessionId: Number(session.id),
+    tableNumber: Number(session.table_number),
+    subtotal,
+    taxAmount,
+    serviceCharge,
+    discountAmount,
+    grandTotal: subtotal - discountAmount + taxAmount + serviceCharge,
+    paymentStatus: session.payment_status || 'Unpaid',
+    generatedAt: null,
+    paidAt: null,
+    items: billItems,
+  }
+}
+
+async function getPersistedBill(connection, sessionId) {
+  const [rows] = await connection.query('SELECT * FROM bills WHERE session_id = ?', [sessionId])
+  return rows[0] || null
+}
+
+function mapBillRow(row, items) {
+  return {
+    billNumber: row.bill_number,
+    sessionId: Number(row.session_id),
+    tableNumber: Number(row.table_number),
+    subtotal: Number(row.subtotal),
+    taxAmount: Number(row.tax_amount),
+    serviceCharge: Number(row.service_charge),
+    discountAmount: Number(row.discount_amount),
+    grandTotal: Number(row.grand_total),
+    paymentStatus: row.payment_status,
+    generatedAt: timestamp(row.generated_at),
+    paidAt: timestamp(row.paid_at),
+    items,
+  }
+}
+
+async function upsertSessionBill(connection, session) {
+  const snapshot = await buildSessionBill(connection, session)
+  let paidAt = null
+  if (snapshot.paymentStatus === 'Paid') {
+    const [paymentRows] = await connection.query(
+      'SELECT paid_at FROM session_payment_meta WHERE session_id = ?',
+      [session.id],
+    )
+    paidAt = paymentRows[0]?.paid_at || session.payment_approved_at || null
+  }
+  await connection.query(
+    `INSERT INTO bills
+       (bill_number, session_id, table_number, subtotal, tax_amount, service_charge,
+        discount_amount, grand_total, payment_status, paid_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       table_number = VALUES(table_number),
+       subtotal = IF(payment_status = 'Unpaid', VALUES(subtotal), subtotal),
+       tax_amount = IF(payment_status = 'Unpaid', VALUES(tax_amount), tax_amount),
+       service_charge = IF(payment_status = 'Unpaid', VALUES(service_charge), service_charge),
+       discount_amount = IF(payment_status = 'Unpaid', VALUES(discount_amount), discount_amount),
+       grand_total = IF(payment_status = 'Unpaid', VALUES(grand_total), grand_total),
+       paid_at = IF(VALUES(payment_status) = 'Paid' AND paid_at IS NULL, VALUES(paid_at), paid_at),
+       payment_status = IF(VALUES(payment_status) = 'Paid', 'Paid', payment_status)`,
+    [
+      snapshot.billNumber,
+      snapshot.sessionId,
+      snapshot.tableNumber,
+      snapshot.subtotal,
+      snapshot.taxAmount,
+      snapshot.serviceCharge,
+      snapshot.discountAmount,
+      snapshot.grandTotal,
+      snapshot.paymentStatus,
+      paidAt,
+    ],
+  )
+  const row = await getPersistedBill(connection, session.id)
+  return mapBillRow(row, snapshot.items)
+}
+
+async function loadBillForSession(connection, session) {
+  const row = await getPersistedBill(connection, session.id)
+  const snapshot = await buildSessionBill(connection, session)
+  if (!row || row.payment_status === 'Unpaid') {
+    if (snapshot.paymentStatus === 'Paid') {
+      const [paymentRows] = await connection.query(
+        'SELECT paid_at FROM session_payment_meta WHERE session_id = ?',
+        [session.id],
+      )
+      snapshot.paidAt = timestamp(paymentRows[0]?.paid_at || session.payment_approved_at)
+    }
+    return {
+      ...snapshot,
+      billNumber: row?.bill_number || snapshot.billNumber,
+      generatedAt: row ? timestamp(row.generated_at) : null,
+    }
+  }
+  return mapBillRow(row, snapshot.items)
+}
+
 async function authRequired(req, _res, next) {
   try {
     const authorization = req.get('authorization') || ''
@@ -399,15 +525,19 @@ app.get('/api/revenue/today', authRequired, asyncRoute(async (_req, res) => {
             COUNT(*) AS paidBills
        FROM (
          SELECT ts.id,
-                COALESCE(order_totals.subtotal, 0)
-                  - ROUND(COALESCE(dessert_totals.subtotal, 0) * ts.discount_percent / 100, 0)
-                  + ROUND(
-                      (COALESCE(order_totals.subtotal, 0)
-                        - ROUND(COALESCE(dessert_totals.subtotal, 0) * ts.discount_percent / 100, 0))
-                      * 0.05,
-                      0
-                    ) AS grand_total
+                COALESCE(
+                  b.grand_total,
+                  COALESCE(order_totals.subtotal, 0)
+                    - ROUND(COALESCE(dessert_totals.subtotal, 0) * ts.discount_percent / 100, 0)
+                    + ROUND(
+                        (COALESCE(order_totals.subtotal, 0)
+                          - ROUND(COALESCE(dessert_totals.subtotal, 0) * ts.discount_percent / 100, 0))
+                        * 0.05,
+                        0
+                      )
+                ) AS grand_total
            FROM table_sessions ts
+           LEFT JOIN bills b ON b.session_id = ts.id
            LEFT JOIN (
              SELECT session_id, SUM(subtotal) AS subtotal
                FROM orders
@@ -424,7 +554,8 @@ app.get('/api/revenue/today', authRequired, asyncRoute(async (_req, res) => {
            LEFT JOIN session_payment_meta payment_meta ON payment_meta.session_id = ts.id
           WHERE ts.is_paid = 1
             AND ts.payment_status = 'Paid'
-            AND DATE(COALESCE(payment_meta.paid_at, ts.payment_approved_at)) = CURDATE()
+            AND (b.id IS NULL OR b.payment_status = 'Paid')
+            AND DATE(COALESCE(b.paid_at, payment_meta.paid_at, ts.payment_approved_at)) = CURDATE()
        ) paid_sessions`,
   )
   res.json({
@@ -432,6 +563,114 @@ app.get('/api/revenue/today', authRequired, asyncRoute(async (_req, res) => {
     revenue: Number(rows[0].revenue) || 0,
     paidBills: Number(rows[0].paidBills) || 0,
   })
+}))
+
+app.get('/api/sessions/:sessionId/bill', asyncRoute(async (req, res) => {
+  const sessionId = parseId(req.params.sessionId, 'sessionId')
+  const [sessions] = await pool.query(
+    `SELECT id, table_number, discount_percent, payment_status, payment_approved_at
+       FROM table_sessions WHERE id = ?`,
+    [sessionId],
+  )
+  if (!sessions.length) throw httpError('Table session was not found.', 404)
+  res.json(await loadBillForSession(pool, sessions[0]))
+}))
+
+app.post('/api/sessions/:sessionId/bill', asyncRoute(async (req, res) => {
+  const sessionId = parseId(req.params.sessionId, 'sessionId')
+  const connection = await pool.getConnection()
+  let bill
+  try {
+    await connection.beginTransaction()
+    const [sessions] = await connection.query(
+      `SELECT id, table_number, discount_percent, payment_status, payment_approved_at, is_active, is_paid
+         FROM table_sessions WHERE id = ? FOR UPDATE`,
+      [sessionId],
+    )
+    const session = sessions[0]
+    if (!session) throw httpError('Table session was not found.', 404)
+    if (session.payment_status === 'Paid' || session.is_paid) {
+      bill = await upsertSessionBill(connection, session)
+    } else {
+      if (!session.is_active) throw httpError('Only an active table session can generate a bill.', 409)
+      const [[orderSummary]] = await connection.query(
+        `SELECT COUNT(*) AS order_count,
+                SUM(status <> 'Confirmed Served') AS unconfirmed_count
+           FROM orders WHERE session_id = ?`,
+        [sessionId],
+      )
+      if (!Number(orderSummary.order_count)) throw httpError('Place an order before generating a bill.', 409)
+      if (Number(orderSummary.unconfirmed_count) > 0) {
+        throw httpError('Please confirm your served dishes before generating the final bill.', 409)
+      }
+      const [[cartSummary]] = await connection.query(
+        'SELECT COUNT(*) AS line_count FROM cart_items WHERE session_id = ?',
+        [sessionId],
+      )
+      if (Number(cartSummary.line_count) > 0) {
+        throw httpError('Place your active plate orders before generating the final bill.', 409)
+      }
+      bill = await upsertSessionBill(connection, session)
+    }
+    await connection.commit()
+  } catch (error) {
+    await connection.rollback()
+    throw error
+  } finally {
+    connection.release()
+  }
+  res.json(bill)
+}))
+
+app.post('/api/feedback', asyncRoute(async (req, res) => {
+  const sessionId = parseId(req.body?.sessionId, 'sessionId')
+  const customerId = parseId(req.body?.customerId, 'customerId')
+  const rating = Number(req.body?.rating)
+  const comment = String(req.body?.comment || '').trim()
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    throw httpError('Rating must be a whole number from 1 to 5.')
+  }
+  if (comment.length > 2000) throw httpError('Feedback comment must be 2000 characters or fewer.')
+  const [guests] = await pool.query(
+    `SELECT g.customer_name, s.table_number
+       FROM session_guests g
+       JOIN table_sessions s ON s.id = g.session_id
+      WHERE s.id = ? AND g.id = ?`,
+    [sessionId, customerId],
+  )
+  if (!guests.length) throw httpError('The guest is not part of this table session.', 404)
+  const customerName = guests[0].customer_name
+  const [result] = await pool.query(
+    `INSERT INTO feedback (session_id, table_number, customer_name, rating, \`comment\`)
+     VALUES (?, ?, ?, ?, ?)`,
+    [sessionId, guests[0].table_number, customerName, rating, comment],
+  )
+  sendChange('feedback:created', { id: asString(result.insertId), sessionId: asString(sessionId) })
+  res.status(201).json({
+    id: asString(result.insertId),
+    sessionId: asString(sessionId),
+    tableNumber: Number(guests[0].table_number),
+    customerName,
+    rating,
+    comment,
+    createdAt: Date.now(),
+  })
+}))
+
+app.get('/api/feedback', authRequired, asyncRoute(async (_req, res) => {
+  const [rows] = await pool.query(
+    `SELECT id, session_id, table_number, customer_name, rating, \`comment\` AS comment, created_at
+       FROM feedback ORDER BY created_at DESC, id DESC LIMIT 100`,
+  )
+  res.json(rows.map((row) => ({
+    id: asString(row.id),
+    sessionId: asString(row.session_id),
+    tableNumber: Number(row.table_number),
+    customerName: row.customer_name,
+    rating: Number(row.rating),
+    comment: row.comment || '',
+    createdAt: timestamp(row.created_at),
+  })))
 }))
 
 app.get('/api/menu', asyncRoute(async (req, res) => {
@@ -824,7 +1063,7 @@ app.post('/api/sessions/:sessionId/pay', asyncRoute(async (req, res) => {
     if (!initialSessions.length) throw httpError('Active table session was not found.', 404)
     await findTable(initialSessions[0].table_number, connection, true)
     const [sessions] = await connection.query(
-      `SELECT id, table_number, is_active, is_paid, payment_status
+      `SELECT id, table_number, discount_percent, is_active, is_paid, payment_status
          FROM table_sessions WHERE id = ? FOR UPDATE`,
       [sessionId],
     )
@@ -854,6 +1093,7 @@ app.post('/api/sessions/:sessionId/pay', asyncRoute(async (req, res) => {
       throw httpError('Please confirm your served dishes first before paying the bill.', 409)
     }
     tableNumber = session.table_number
+    await upsertSessionBill(connection, session)
     await connection.query(
       `UPDATE table_sessions
           SET is_paid = 0, payment_status = 'Pending Manager Approval',
@@ -861,6 +1101,11 @@ app.post('/api/sessions/:sessionId/pay', asyncRoute(async (req, res) => {
               payment_approved_by = NULL, payment_approved_at = NULL
         WHERE id = ?`,
       [method, sessionId],
+    )
+    await connection.query(
+      `UPDATE bills SET payment_status = 'Pending Manager Approval'
+        WHERE session_id = ? AND payment_status = 'Unpaid'`,
+      [sessionId],
     )
     await connection.commit()
   } catch (error) {
@@ -882,7 +1127,7 @@ app.post('/api/sessions/:sessionId/approve-payment', authRequired, asyncRoute(as
   try {
     await connection.beginTransaction()
     const [sessions] = await connection.query(
-      `SELECT id, table_number, is_active, payment_status
+      `SELECT id, table_number, discount_percent, is_active, payment_status
          FROM table_sessions WHERE id = ? FOR UPDATE`,
       [sessionId],
     )
@@ -892,6 +1137,7 @@ app.post('/api/sessions/:sessionId/approve-payment', authRequired, asyncRoute(as
       throw httpError('This session has no payment pending approval.', 409)
     }
     tableNumber = session.table_number
+    await upsertSessionBill(connection, session)
     await connection.query(
       `UPDATE table_sessions
           SET is_paid = 1, payment_status = 'Paid',
@@ -902,6 +1148,11 @@ app.post('/api/sessions/:sessionId/approve-payment', authRequired, asyncRoute(as
     await connection.query(
       `INSERT INTO session_payment_meta (session_id, paid_at) VALUES (?, NOW())
        ON DUPLICATE KEY UPDATE paid_at = VALUES(paid_at)`,
+      [sessionId],
+    )
+    await connection.query(
+      `UPDATE bills SET payment_status = 'Paid', paid_at = NOW()
+        WHERE session_id = ?`,
       [sessionId],
     )
     await connection.commit()
@@ -1506,5 +1757,51 @@ io.on('connection', (socket) => {
   })
 })
 
-const port = Number(process.env.PORT || 5000)
-httpServer.listen(port, () => console.log(`DinePlay API listening on http://localhost:${port}`))
+async function startServer() {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS bills (
+       id INT NOT NULL AUTO_INCREMENT,
+       bill_number VARCHAR(40) NOT NULL,
+       session_id INT NOT NULL,
+       table_number INT NOT NULL,
+       subtotal DECIMAL(10, 2) NOT NULL DEFAULT 0,
+       tax_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
+       service_charge DECIMAL(10, 2) NOT NULL DEFAULT 0,
+       discount_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
+       grand_total DECIMAL(10, 2) NOT NULL DEFAULT 0,
+       payment_status ENUM('Unpaid', 'Pending Manager Approval', 'Paid') NOT NULL DEFAULT 'Unpaid',
+       generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       paid_at DATETIME NULL,
+       PRIMARY KEY (id),
+       UNIQUE KEY uq_bills_bill_number (bill_number),
+       UNIQUE KEY uq_bills_session (session_id),
+       KEY idx_bills_table_generated (table_number, generated_at),
+       KEY idx_bills_payment_paid_at (payment_status, paid_at),
+       CONSTRAINT fk_bills_session FOREIGN KEY (session_id) REFERENCES table_sessions (id)
+         ON DELETE CASCADE
+     ) ENGINE=InnoDB`,
+  )
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS feedback (
+       id INT NOT NULL AUTO_INCREMENT,
+       session_id INT NOT NULL,
+       table_number INT NOT NULL,
+       customer_name VARCHAR(120) NOT NULL,
+       rating TINYINT UNSIGNED NOT NULL,
+       \`comment\` TEXT NOT NULL,
+       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY (id),
+       KEY idx_feedback_created (created_at),
+       KEY idx_feedback_session (session_id),
+       CONSTRAINT fk_feedback_session FOREIGN KEY (session_id) REFERENCES table_sessions (id)
+         ON DELETE CASCADE
+     ) ENGINE=InnoDB`,
+  )
+  const port = Number(process.env.PORT || 5000)
+  httpServer.listen(port, () => console.log(`DinePlay API listening on http://localhost:${port}`))
+}
+
+startServer().catch((error) => {
+  console.error('DinePlay could not start because its database schema could not be prepared.', error)
+  process.exitCode = 1
+})

@@ -48,6 +48,27 @@ export async function fetchTodayRevenue(token) {
   return request('/revenue/today', { token })
 }
 
+export async function fetchBill(sessionId) {
+  if (!sessionId) throw new Error('Join a table before viewing its bill.')
+  return request(`/sessions/${sessionId}/bill`)
+}
+
+export async function generateBill(sessionId) {
+  if (!sessionId) throw new Error('Join a table before generating a bill.')
+  return request(`/sessions/${sessionId}/bill`, { method: 'POST' })
+}
+
+export async function submitFeedback({ sessionId, customerId, rating, comment }) {
+  return request('/feedback', {
+    method: 'POST',
+    body: { sessionId, customerId, rating, comment },
+  })
+}
+
+export async function fetchFeedback(token) {
+  return request('/feedback', { token })
+}
+
 export async function createSession(tableId, { name, phone = '' }) {
   return request('/sessions/join', {
     method: 'POST',
