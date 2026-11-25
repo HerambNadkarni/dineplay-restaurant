@@ -55,6 +55,16 @@ function parseId(value, label = 'id') {
   return id
 }
 
+function parseIntegerInput(value, label) {
+  if (
+    (typeof value !== 'number' && typeof value !== 'string')
+    || (typeof value === 'string' && !/^\d+$/.test(value.trim()))
+  ) {
+    throw httpError(`${label} must be a positive integer.`)
+  }
+  return parseId(value, label)
+}
+
 function validateStaffIdentity(identity) {
   const value = String(identity || '').trim()
   if (value.includes('@')) {
@@ -367,24 +377,47 @@ async function loadOrders({ sessionId, activeOnly = false } = {}) {
 }
 
 async function buildSessionBill(connection, session) {
-  const [items] = await connection.query(
-    `SELECT oi.item_name, COALESCE(mi.category, '') AS category,
+  const [rows] = await connection.query(
+    `SELECT o.id AS order_id, o.status AS order_status, o.created_at,
+            d.instructions, oi.item_name, COALESCE(mi.category, '') AS category,
             oi.unit_price, oi.quantity, oi.note
        FROM orders o
-       JOIN order_items oi ON oi.order_id = o.id
+       LEFT JOIN order_details d ON d.order_id = o.id
+       LEFT JOIN order_items oi ON oi.order_id = o.id
        LEFT JOIN menu_items mi ON mi.id = oi.menu_item_id
       WHERE o.session_id = ?
       ORDER BY o.id, oi.id`,
     [session.id],
   )
-  const billItems = items.map((item) => ({
-    name: item.item_name,
-    category: item.category,
-    unitPrice: Number(item.unit_price) || 0,
-    quantity: Number(item.quantity) || 0,
-    note: item.note || '',
-    total: (Number(item.unit_price) || 0) * (Number(item.quantity) || 0),
-  }))
+  const ordersById = new Map()
+  rows.forEach((row) => {
+    const orderId = asString(row.order_id)
+    if (!ordersById.has(orderId)) {
+      ordersById.set(orderId, {
+        id: orderId,
+        status: toUiOrderStatus(row.order_status),
+        createdAt: timestamp(row.created_at),
+        instructions: row.instructions || '',
+        subtotal: 0,
+        items: [],
+      })
+    }
+    if (row.item_name) {
+      const item = {
+        name: row.item_name,
+        category: row.category,
+        unitPrice: Number(row.unit_price) || 0,
+        quantity: Number(row.quantity) || 0,
+        note: row.note || '',
+        total: (Number(row.unit_price) || 0) * (Number(row.quantity) || 0),
+      }
+      const order = ordersById.get(orderId)
+      order.items.push(item)
+      order.subtotal += item.total
+    }
+  })
+  const orders = [...ordersById.values()]
+  const billItems = orders.flatMap((order) => order.items)
   const subtotal = billItems.reduce((sum, item) => sum + item.total, 0)
   const dessertSubtotal = billItems.reduce(
     (sum, item) => sum + (/dessert/i.test(item.category) ? item.total : 0),
@@ -405,6 +438,7 @@ async function buildSessionBill(connection, session) {
     paymentStatus: session.payment_status || 'Unpaid',
     generatedAt: null,
     paidAt: null,
+    orders,
     items: billItems,
   }
 }
@@ -414,7 +448,7 @@ async function getPersistedBill(connection, sessionId) {
   return rows[0] || null
 }
 
-function mapBillRow(row, items) {
+function mapBillRow(row, snapshot) {
   return {
     billNumber: row.bill_number,
     sessionId: Number(row.session_id),
@@ -427,7 +461,8 @@ function mapBillRow(row, items) {
     paymentStatus: row.payment_status,
     generatedAt: timestamp(row.generated_at),
     paidAt: timestamp(row.paid_at),
-    items,
+    orders: snapshot.orders,
+    items: snapshot.items,
   }
 }
 
@@ -469,7 +504,7 @@ async function upsertSessionBill(connection, session) {
     ],
   )
   const row = await getPersistedBill(connection, session.id)
-  return mapBillRow(row, snapshot.items)
+  return mapBillRow(row, snapshot)
 }
 
 async function loadBillForSession(connection, session) {
@@ -489,7 +524,7 @@ async function loadBillForSession(connection, session) {
       generatedAt: row ? timestamp(row.generated_at) : null,
     }
   }
-  return mapBillRow(row, snapshot.items)
+  return mapBillRow(row, snapshot)
 }
 
 async function authRequired(req, _res, next) {
@@ -623,11 +658,36 @@ app.post('/api/sessions/:sessionId/bill', asyncRoute(async (req, res) => {
 }))
 
 app.post('/api/feedback', asyncRoute(async (req, res) => {
-  const sessionId = parseId(req.body?.sessionId, 'sessionId')
-  const customerId = parseId(req.body?.customerId, 'customerId')
-  const rating = Number(req.body?.rating)
-  const comment = String(req.body?.comment || '').trim()
-  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+  const body = req.body || {}
+  const sessionId = parseIntegerInput(body.sessionId ?? body.session_id, 'sessionId')
+  const customerIdValue = body.customerId ?? body.customer_id
+  const customerNameValue = body.customerName ?? body.customer_name
+  const tableNumberValue = body.tableNumber ?? body.table_number
+  let customerName = ''
+  if (customerNameValue !== undefined && customerNameValue !== null) {
+    if (typeof customerNameValue !== 'string') throw httpError('customerName must be text.')
+    customerName = customerNameValue.trim()
+  }
+  if (customerName && (customerName.length < 2 || customerName.length > 120)) {
+    throw httpError('customerName must be between 2 and 120 characters.')
+  }
+  if ((customerIdValue === undefined || customerIdValue === null) && !customerName) {
+    throw httpError('Provide a customerId or customerName for this feedback.')
+  }
+  const customerId = customerIdValue === undefined || customerIdValue === null
+    ? null
+    : parseIntegerInput(customerIdValue, 'customerId')
+  let tableNumber = null
+  if (tableNumberValue !== undefined && tableNumberValue !== null) {
+    tableNumber = parseTableNumber(parseIntegerInput(tableNumberValue, 'tableNumber'))
+  }
+  const rating = Number(body.rating)
+  let comment = ''
+  if (body.comment !== undefined && body.comment !== null) {
+    if (typeof body.comment !== 'string') throw httpError('comment must be text.')
+    comment = body.comment.trim()
+  }
+  if (!Number.isSafeInteger(rating) || rating < 1 || rating > 5) {
     throw httpError('Rating must be a whole number from 1 to 5.')
   }
   if (comment.length > 2000) throw httpError('Feedback comment must be 2000 characters or fewer.')
@@ -635,32 +695,63 @@ app.post('/api/feedback', asyncRoute(async (req, res) => {
     `SELECT g.customer_name, s.table_number
        FROM session_guests g
        JOIN table_sessions s ON s.id = g.session_id
-      WHERE s.id = ? AND g.id = ?`,
-    [sessionId, customerId],
+      WHERE s.id = ? AND ${customerId === null ? 'g.customer_name = ?' : 'g.id = ?'}
+      ORDER BY g.id LIMIT 1`,
+    [sessionId, customerId === null ? customerName : customerId],
   )
   if (!guests.length) throw httpError('The guest is not part of this table session.', 404)
-  const customerName = guests[0].customer_name
+  if (customerName && customerName !== guests[0].customer_name) {
+    throw httpError('customerName does not match the selected table guest.')
+  }
+  if (tableNumber !== null && tableNumber !== Number(guests[0].table_number)) {
+    throw httpError('tableNumber does not match the selected table session.')
+  }
+  const verifiedCustomerName = guests[0].customer_name
   const [result] = await pool.query(
     `INSERT INTO feedback (session_id, table_number, customer_name, rating, \`comment\`)
      VALUES (?, ?, ?, ?, ?)`,
-    [sessionId, guests[0].table_number, customerName, rating, comment],
+    [sessionId, guests[0].table_number, verifiedCustomerName, rating, comment],
   )
   sendChange('feedback:created', { id: asString(result.insertId), sessionId: asString(sessionId) })
   res.status(201).json({
     id: asString(result.insertId),
     sessionId: asString(sessionId),
     tableNumber: Number(guests[0].table_number),
-    customerName,
+    customerName: verifiedCustomerName,
     rating,
     comment,
     createdAt: Date.now(),
   })
 }))
 
-app.get('/api/feedback', authRequired, asyncRoute(async (_req, res) => {
+app.get('/api/feedback', authRequired, asyncRoute(async (req, res) => {
+  const filters = []
+  const values = []
+  const sessionIdValue = req.query.sessionId ?? req.query.session_id
+  const tableNumberValue = req.query.tableNumber ?? req.query.table_number
+  const customerNameValue = req.query.customerName ?? req.query.customer_name
+  if (sessionIdValue !== undefined) {
+    filters.push('session_id = ?')
+    values.push(parseIntegerInput(sessionIdValue, 'sessionId'))
+  }
+  if (tableNumberValue !== undefined) {
+    filters.push('table_number = ?')
+    values.push(parseTableNumber(parseIntegerInput(tableNumberValue, 'tableNumber')))
+  }
+  if (customerNameValue !== undefined) {
+    if (typeof customerNameValue !== 'string') throw httpError('customerName must be text.')
+    const customerName = customerNameValue.trim()
+    if (!customerName || customerName.length > 120) {
+      throw httpError('customerName must be between 1 and 120 characters.')
+    }
+    filters.push('customer_name = ?')
+    values.push(customerName)
+  }
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
   const [rows] = await pool.query(
     `SELECT id, session_id, table_number, customer_name, rating, \`comment\` AS comment, created_at
-       FROM feedback ORDER BY created_at DESC, id DESC LIMIT 100`,
+       FROM feedback ${where} ORDER BY created_at DESC, id DESC LIMIT 100`,
+    values,
   )
   res.json(rows.map((row) => ({
     id: asString(row.id),

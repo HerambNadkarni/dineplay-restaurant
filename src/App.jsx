@@ -738,6 +738,8 @@ function PlateScreen({ table, customer, now }) {
       await api.submitFeedback({
         sessionId: table.sessionId,
         customerId: customer.id,
+        tableNumber: Number(table.id),
+        customerName: customer.name,
         rating: feedbackRating,
         comment: feedbackComment,
       })

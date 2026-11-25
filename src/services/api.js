@@ -48,25 +48,53 @@ export async function fetchTodayRevenue(token) {
   return request('/revenue/today', { token })
 }
 
+function billSessionPath(sessionId) {
+  const parsedId = Number(sessionId)
+  if (!Number.isSafeInteger(parsedId) || parsedId < 1) {
+    throw new Error('The table session ID is invalid. Refresh the table and try again.')
+  }
+  return `/sessions/${encodeURIComponent(String(parsedId))}/bill`
+}
+
+async function requestWithRouteFallback(path, options, resourceName) {
+  try {
+    return await request(path, options)
+  } catch (error) {
+    if (error.status === 404 && /^Route (GET|POST) .* was not found\.$/.test(error.message)) {
+      throw new Error(`The connected backend does not have the ${resourceName} endpoint yet. Restart or deploy the latest backend, then try again.`)
+    }
+    throw error
+  }
+}
+
 export async function fetchBill(sessionId) {
-  if (!sessionId) throw new Error('Join a table before viewing its bill.')
-  return request(`/sessions/${sessionId}/bill`)
+  return requestWithRouteFallback(billSessionPath(sessionId), undefined, 'bill')
 }
 
 export async function generateBill(sessionId) {
-  if (!sessionId) throw new Error('Join a table before generating a bill.')
-  return request(`/sessions/${sessionId}/bill`, { method: 'POST' })
+  return requestWithRouteFallback(billSessionPath(sessionId), { method: 'POST' }, 'bill')
 }
 
-export async function submitFeedback({ sessionId, customerId, rating, comment }) {
-  return request('/feedback', {
+export async function submitFeedback(details = {}) {
+  const sessionId = details.sessionId ?? details.session_id
+  const customerId = details.customerId ?? details.customer_id
+  const tableNumber = details.tableNumber ?? details.table_number
+  const customerName = details.customerName ?? details.customer_name
+  return requestWithRouteFallback('/feedback', {
     method: 'POST',
-    body: { sessionId, customerId, rating, comment },
-  })
+    body: {
+      sessionId,
+      customerId,
+      tableNumber,
+      customerName,
+      rating: details.rating,
+      comment: details.comment,
+    },
+  }, 'feedback')
 }
 
 export async function fetchFeedback(token) {
-  return request('/feedback', { token })
+  return requestWithRouteFallback('/feedback', { token }, 'feedback')
 }
 
 export async function createSession(tableId, { name, phone = '' }) {
