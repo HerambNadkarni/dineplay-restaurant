@@ -556,6 +556,106 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .staff-auth-form [aria-invalid="true"], .welcome-card form input[aria-invalid="true"] { border-color: #c84b31; box-shadow: 0 0 0 2px #c84b3116; }
 .welcome-card form .field-error { margin-top: -3px; }
 
+.welcome-card, .staff-auth-card {
+  border: 1px solid #e5d8c8;
+  border-radius: 16px;
+  background: #fffdf9;
+  box-shadow: 0 2px 5px #4c34200a, 0 18px 44px #4c34201c;
+}
+.welcome-card { padding: 30px 32px 23px; }
+.staff-auth-card { padding: 30px 32px 24px; }
+.staff-auth-layout { background: radial-gradient(ellipse at 50% 25%, #f1e4d3 0%, #fffdf9 54%, #f5efe7 100%); }
+.staff-auth-form { gap: 9px; }
+.staff-auth-form label { margin-top: 7px; font-size: 10px; }
+.welcome-card form label { margin: 13px 0 7px; font-size: 10px; }
+.welcome-card form label:first-of-type { margin-top: 0; }
+.welcome-card form input,
+.staff-auth-form > input,
+.staff-auth-form > select {
+  width: 100%;
+  height: 46px;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid #e5d8c8;
+  border-radius: 8px;
+  color: #342b24;
+  background: #fffdf9;
+  font-size: 12px;
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+}
+.password-field {
+  height: 46px;
+  min-height: 46px;
+  border: 1px solid #e5d8c8;
+  border-radius: 8px;
+  background: #fffdf9;
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
+}
+.password-field input { height: 44px; padding: 0 12px; font-size: 12px; }
+.password-field button { flex-basis: 44px; height: 44px; }
+.welcome-card form input:focus-visible,
+.staff-auth-form > input:focus-visible,
+.staff-auth-form > select:focus-visible,
+.password-field input:focus-visible {
+  outline: none;
+}
+.welcome-card form input:focus,
+.staff-auth-form > input:focus,
+.staff-auth-form > select:focus,
+.password-field:focus-within {
+  border-color: #c84b28;
+  box-shadow: 0 0 0 3px #c84b2824;
+}
+.staff-auth-form [aria-invalid="true"],
+.welcome-card form input[aria-invalid="true"] {
+  border-color: #c84b28;
+  background: #fff3f0;
+  box-shadow: 0 0 0 2px #c84b2816;
+}
+.password-field:has(input[aria-invalid="true"]) {
+  border-color: #c84b28;
+  background: #fff3f0;
+  box-shadow: 0 0 0 2px #c84b2816;
+}
+.field-error {
+  padding: 6px 8px;
+  border: 1px solid #ebc7bf;
+  border-radius: 6px;
+  color: #a13d31;
+  background: #fff4f1;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.welcome-card form .field-error { margin-top: 0; }
+.welcome-submit, .auth-submit {
+  min-height: 46px;
+  border-radius: 8px;
+  color: #fffaf5;
+  background: linear-gradient(180deg, #d05a36 0%, #b83e24 100%);
+  box-shadow: 0 3px 8px #9f3b251f, inset 0 1px #ffffff30;
+  transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
+}
+.welcome-submit:hover:not(:disabled), .auth-submit:hover:not(:disabled) {
+  filter: brightness(1.04);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 13px #9f3b2529, inset 0 1px #ffffff30;
+}
+.welcome-submit:active:not(:disabled), .auth-submit:active:not(:disabled) {
+  transform: translateY(1px) scale(.99);
+  box-shadow: 0 1px 3px #9f3b251a, inset 0 1px #ffffff24;
+}
+.welcome-submit:disabled, .auth-submit:disabled {
+  cursor: not-allowed;
+  opacity: .58;
+  filter: saturate(.65);
+  transform: none;
+  box-shadow: none;
+}
+@media (max-width: 650px) {
+  .welcome-card { padding: 25px 21px 19px; border-radius: 14px; }
+  .staff-auth-card { margin-top: 31px; padding: 25px 21px 19px; border-radius: 14px; }
+}
+
 .today-special-card { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 15px; margin: 18px 0 25px; border: 1px solid #e8cfaa; border-radius: 12px; background: linear-gradient(110deg, #fff9ee, #f8eddd); box-shadow: 0 8px 20px #7f51200c; }
 .today-special-art { position: relative; display: grid; place-items: center; width: 72px; height: 72px; border-radius: 10px; background: #eed9b9; font-size: 37px; }.today-special-art i { position: absolute; top: 4px; right: 7px; color: #b66b2b; font-size: 13px; font-style: normal; }
 .today-special-kicker { display: flex; align-items: center; gap: 7px; color: #a14d2c; font-size: 8px; font-weight: 800; letter-spacing: 1px; }.today-special-kicker i, .admin-today-special > span i { display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: #c84b31; }
