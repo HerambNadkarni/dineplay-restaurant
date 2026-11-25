@@ -691,37 +691,74 @@ app.post('/api/feedback', asyncRoute(async (req, res) => {
     throw httpError('Rating must be a whole number from 1 to 5.')
   }
   if (comment.length > 2000) throw httpError('Feedback comment must be 2000 characters or fewer.')
-  const [guests] = await pool.query(
-    `SELECT g.customer_name, s.table_number
-       FROM session_guests g
-       JOIN table_sessions s ON s.id = g.session_id
-      WHERE s.id = ? AND ${customerId === null ? 'g.customer_name = ?' : 'g.id = ?'}
-      ORDER BY g.id LIMIT 1`,
-    [sessionId, customerId === null ? customerName : customerId],
-  )
-  if (!guests.length) throw httpError('The guest is not part of this table session.', 404)
-  if (customerName && customerName !== guests[0].customer_name) {
-    throw httpError('customerName does not match the selected table guest.')
+  const connection = await pool.getConnection()
+  let feedback
+  let created = false
+  try {
+    await connection.beginTransaction()
+    const [sessions] = await connection.query(
+      'SELECT table_number FROM table_sessions WHERE id = ? FOR UPDATE',
+      [sessionId],
+    )
+    if (!sessions.length) throw httpError('Table session was not found.', 404)
+    if (tableNumber !== null && tableNumber !== Number(sessions[0].table_number)) {
+      throw httpError('tableNumber does not match the selected table session.')
+    }
+    const [guests] = await connection.query(
+      `SELECT customer_name
+         FROM session_guests
+        WHERE session_id = ? AND ${customerId === null ? 'customer_name = ?' : 'id = ?'}
+        ORDER BY id LIMIT 1`,
+      [sessionId, customerId === null ? customerName : customerId],
+    )
+    if (!guests.length) throw httpError('The guest is not part of this table session.', 404)
+    if (customerName && customerName !== guests[0].customer_name) {
+      throw httpError('customerName does not match the selected table guest.')
+    }
+    const [existingRows] = await connection.query(
+      `SELECT id, customer_name, rating, \`comment\`, created_at
+         FROM feedback WHERE session_id = ? ORDER BY id LIMIT 1`,
+      [sessionId],
+    )
+    if (existingRows.length) {
+      const existing = existingRows[0]
+      feedback = {
+        id: asString(existing.id),
+        sessionId: asString(sessionId),
+        tableNumber: Number(sessions[0].table_number),
+        customerName: existing.customer_name,
+        rating: Number(existing.rating),
+        comment: existing.comment || '',
+        createdAt: timestamp(existing.created_at),
+        duplicate: true,
+      }
+    } else {
+      const [result] = await connection.query(
+        `INSERT INTO feedback (session_id, table_number, customer_name, rating, \`comment\`)
+         VALUES (?, ?, ?, ?, ?)`,
+        [sessionId, sessions[0].table_number, guests[0].customer_name, rating, comment],
+      )
+      feedback = {
+        id: asString(result.insertId),
+        sessionId: asString(sessionId),
+        tableNumber: Number(sessions[0].table_number),
+        customerName: guests[0].customer_name,
+        rating,
+        comment,
+        createdAt: Date.now(),
+        duplicate: false,
+      }
+      created = true
+    }
+    await connection.commit()
+  } catch (error) {
+    await connection.rollback()
+    throw error
+  } finally {
+    connection.release()
   }
-  if (tableNumber !== null && tableNumber !== Number(guests[0].table_number)) {
-    throw httpError('tableNumber does not match the selected table session.')
-  }
-  const verifiedCustomerName = guests[0].customer_name
-  const [result] = await pool.query(
-    `INSERT INTO feedback (session_id, table_number, customer_name, rating, \`comment\`)
-     VALUES (?, ?, ?, ?, ?)`,
-    [sessionId, guests[0].table_number, verifiedCustomerName, rating, comment],
-  )
-  sendChange('feedback:created', { id: asString(result.insertId), sessionId: asString(sessionId) })
-  res.status(201).json({
-    id: asString(result.insertId),
-    sessionId: asString(sessionId),
-    tableNumber: Number(guests[0].table_number),
-    customerName: verifiedCustomerName,
-    rating,
-    comment,
-    createdAt: Date.now(),
-  })
+  if (created) sendChange('feedback:created', { id: feedback.id, sessionId: asString(sessionId) })
+  res.status(created ? 201 : 200).json(feedback)
 }))
 
 app.get('/api/feedback', authRequired, asyncRoute(async (req, res) => {

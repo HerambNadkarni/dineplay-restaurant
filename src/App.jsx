@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowDown, ArrowLeft, ArrowRight, Bell, Check, ChefHat, ChevronDown, CircleHelp,
   Clock3, Coffee, Eye, EyeOff, Gamepad2, Heart, LockKeyhole, LogOut, MapPin, Minus, Plus, QrCode, Search, ShoppingBag,
@@ -28,6 +29,15 @@ const readStoredGuest = () => {
       : null
   } catch {
     return null
+  }
+  const feedbackStorageKey = (sessionId) => `dineplay-feedback-${sessionId}`
+  const hasSubmittedFeedback = (sessionId) => {
+    if (!sessionId) return false
+    try {
+      return localStorage.getItem(feedbackStorageKey(sessionId)) === 'sent'
+    } catch {
+      return false
+    }
   }
 }
 const orderStatusLabel = (status) => status === 'Received'
@@ -691,7 +701,9 @@ function PlateScreen({ table, customer, now }) {
   const [feedbackRating, setFeedbackRating] = useState(5)
   const [feedbackComment, setFeedbackComment] = useState('')
   const [feedbackError, setFeedbackError] = useState('')
-  const [feedbackSent, setFeedbackSent] = useState(false)
+  const [feedbackBusy, setFeedbackBusy] = useState(false)
+  const [feedbackSent, setFeedbackSent] = useState(() => hasSubmittedFeedback(table.sessionId))
+  const feedbackSubmitInFlight = useRef(false)
   const cart = table.cart.filter((line) => line.customerId === customer.id)
   const orders = table.orders.filter((order) => order.customerId === customer.id)
   const totals = getTableTotal(table)
@@ -708,6 +720,19 @@ function PlateScreen({ table, customer, now }) {
       : !allOrdersConfirmed
         ? 'Please confirm your served dishes first before paying the bill.'
         : ''
+  useEffect(() => {
+    setFeedbackSent(hasSubmittedFeedback(table.sessionId))
+  }, [table.sessionId])
+  useEffect(() => {
+    if (!bill || !table.payment?.status) return
+    setBill((current) => current
+      ? {
+        ...current,
+        paymentStatus: table.payment.status,
+        paidAt: table.payment.paidAt || current.paidAt,
+      }
+      : current)
+  }, [bill?.billNumber, table.payment?.status, table.payment?.paidAt])
   const submitOrder = async () => {
     const created = await placeOrder(table.id, customer, instructions)
     if (created) {
@@ -733,6 +758,9 @@ function PlateScreen({ table, customer, now }) {
   }
   const submitFeedback = async (event) => {
     event.preventDefault()
+    if (feedbackSubmitInFlight.current || feedbackSent) return
+    feedbackSubmitInFlight.current = true
+    setFeedbackBusy(true)
     setFeedbackError('')
     try {
       await api.submitFeedback({
@@ -743,11 +771,19 @@ function PlateScreen({ table, customer, now }) {
         rating: feedbackRating,
         comment: feedbackComment,
       })
+      try {
+        localStorage.setItem(feedbackStorageKey(table.sessionId), 'sent')
+      } catch {
+        // Server-side uniqueness still prevents duplicate feedback if storage is unavailable.
+      }
       setFeedbackSent(true)
       setFeedbackOpen(false)
       setFeedbackComment('')
     } catch (error) {
       setFeedbackError(error.message || 'Your feedback could not be sent. Please try again.')
+    } finally {
+      feedbackSubmitInFlight.current = false
+      setFeedbackBusy(false)
     }
   }
   const printBill = () => {
@@ -821,7 +857,7 @@ function PlateScreen({ table, customer, now }) {
           <div className="bill-footnote"><Sparkles size={13} /> Keep playing for tasty rewards.</div>
         </aside>
       </div>
-      {billOpen && bill && <div className="modal-backdrop bill-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setBillOpen(false) }}>
+      {billOpen && bill && createPortal(<div className="modal-backdrop bill-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setBillOpen(false) }}>
         <section className="bill-modal" role="dialog" aria-modal="true" aria-labelledby="generated-bill-title">
           <div className="bill-modal-heading"><div><span className="eyebrow">DINEPLAY · TABLE #{String(bill.tableNumber).padStart(2, '0')}</span><h2 id="generated-bill-title">Your itemized bill</h2><p>Bill number <b>{bill.billNumber}</b></p></div><button className="icon-button" aria-label="Close bill" onClick={() => setBillOpen(false)}><X size={17} /></button></div>
           <div className="bill-modal-items">{bill.items.length ? bill.items.map((item, index) => <div className="bill-modal-item" key={`${item.name}-${index}`}><div><b>{item.name}</b>{item.note && <small>{item.note}</small>}<span>{item.quantity} × {money(item.unitPrice)}</span></div><strong>{money(item.total)}</strong></div>) : <p className="empty-bill-message">No ordered items have been added to this bill yet.</p>}</div>
@@ -834,7 +870,7 @@ function PlateScreen({ table, customer, now }) {
           </div>
           <div className="bill-modal-footer"><span className={`bill-modal-status ${bill.paymentStatus.toLowerCase().replaceAll(' ', '-')}`}>{bill.paymentStatus}</span><button className="primary-button" onClick={printBill}><ArrowDown size={15} /> Print bill</button></div>
         </section>
-      </div>}
+      </div>, document.body)}
       {feedbackOpen && <div className="modal-backdrop feedback-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setFeedbackOpen(false) }}>
         <section className="feedback-modal" role="dialog" aria-modal="true" aria-labelledby="feedback-title">
           <div className="bill-modal-heading"><div><span className="eyebrow">A NOTE FOR OUR TEAM</span><h2 id="feedback-title">How was your visit?</h2><p>Your feedback helps us make the next meal better.</p></div><button className="icon-button" aria-label="Close feedback" onClick={() => setFeedbackOpen(false)}><X size={17} /></button></div>
@@ -842,7 +878,7 @@ function PlateScreen({ table, customer, now }) {
             <fieldset className="feedback-rating"><legend>Your rating</legend><div>{[1, 2, 3, 4, 5].map((rating) => <button key={rating} type="button" className={rating <= feedbackRating ? 'selected' : ''} aria-label={`${rating} star${rating === 1 ? '' : 's'}`} aria-pressed={feedbackRating === rating} onClick={() => setFeedbackRating(rating)}><Star size={27} fill={rating <= feedbackRating ? 'currentColor' : 'none'} /></button>)}</div></fieldset>
             <label className="feedback-comment">Your comment<textarea maxLength={2000} value={feedbackComment} onChange={(event) => setFeedbackComment(event.target.value)} placeholder="Tell us what you enjoyed or what we could improve…" /></label>
             {feedbackError && <p className="form-error" role="alert">{feedbackError}</p>}
-            <button type="submit" className="primary-button wide"><MessageSquareText size={15} /> Send feedback</button>
+            <button type="submit" className="primary-button wide" disabled={feedbackBusy || feedbackSent}><MessageSquareText size={15} /> {feedbackBusy ? 'Sending feedback…' : 'Send feedback'}</button>
           </form>
         </section>
       </div>}
@@ -1434,6 +1470,13 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
   const nextStatus = { Received: 'Preparing', Preparing: 'Prepared' }
   const openCalls = calls.length
   const special = getTodaysSpecial(menu, new Date(now))
+  const feedbackAverage = feedbackItems.length
+    ? feedbackItems.reduce((sum, item) => sum + item.rating, 0) / feedbackItems.length
+    : 0
+  const feedbackRatingCounts = [5, 4, 3, 2, 1].map((rating) => ({
+    rating,
+    count: feedbackItems.filter((item) => item.rating === rating).length,
+  }))
 
   useEffect(() => {
     let active = true
@@ -1546,7 +1589,7 @@ function AdminView({ onInspect, now, staffSession, onLock, menu }) {
           <article className="kitchen-card" key={order.id}><div className="kitchen-card-heading"><div><span className="kitchen-table">TABLE #{order.tableId}</span><h3>{order.customerName}</h3><span>{timeAgo(order.createdAt, now)}</span></div><span className={`status-badge ${orderStatusClass(order.status)}`}>{orderStatusLabel(order.status)}</span></div><div className="kitchen-items">{order.items.map((item, index) => <div key={`${item.id}-${index}`}><span>{item.quantity}× {item.name}</span>{item.note && <small>“{item.note}”</small>}</div>)}</div>{order.instructions && <div className="kitchen-note">Kitchen note: {order.instructions}</div>}{nextStatus[order.status] ? <button className="primary-button" onClick={() => updateOrderStatus(order.tableId, order.id, nextStatus[order.status], staffSession?.token)}>{order.status === 'Received' ? <><ChefHat size={15} /> Start preparing</> : <><Check size={15} /> Mark prepared / ready</>} <ArrowRight size={14} /></button> : <p className="kitchen-waiting-confirmation">Waiting for the customer to confirm the dish was served.</p>}</article>
         ))}</div> : <div className="empty-state"><span>🍳</span><b>Kitchen is all caught up</b><p>New orders will show up here as soon as guests place them.</p></div>}</section>}
         {tab === 'calls' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">GUEST REQUESTS</span><h2>Waiter calls</h2><p>Current guest requests.</p></div></div>{calls.length ? <div className="calls-list">{calls.map((call) => <article className="call-card" key={call.id}><span className="call-icon"><Bell size={18} /></span><div><span className="kitchen-table">TABLE #{call.tableId}</span><h3>{call.reason}</h3><p>{call.customerName} · {timeAgo(call.createdAt, now)}</p></div><button className="resolve-button" onClick={() => resolveCall(call.tableId, call.id, staffSession?.token)}><Check size={14} /> Mark resolved</button></article>)}</div> : <div className="empty-state"><span>🔔</span><b>No active waiter calls</b><p>Guest requests will appear here.</p></div>}</section>}
-        {tab === 'feedback' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">GUEST NOTES</span><h2>Visit feedback</h2><p>Recent ratings and comments from your guests.</p></div></div>{feedbackError && <p className="feedback-list-error" role="alert">{feedbackError}</p>}{feedbackItems.length ? <div className="feedback-list">{feedbackItems.map((item) => <article className="feedback-card" key={item.id}><header><div><span className="kitchen-table">TABLE #{String(item.tableNumber).padStart(2, '0')}</span><h3>{item.customerName || 'Guest'}</h3></div><time>{item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}</time></header><div className="feedback-stars" aria-label={`${item.rating} out of 5 stars`}>{[1, 2, 3, 4, 5].map((star) => <Star key={star} size={14} fill={star <= item.rating ? 'currentColor' : 'none'} />)}</div><p>{item.comment || 'No written comment.'}</p></article>)}</div> : !feedbackError && <div className="empty-state"><span>💬</span><b>No feedback just yet</b><p>Guest comments will appear here after they share their visit.</p></div>}</section>}
+        {tab === 'feedback' && <section className="admin-section"><div className="admin-section-heading"><div><span className="eyebrow">GUEST NOTES</span><h2>Visit feedback</h2><p>Recent ratings and comments from your guests.</p></div></div>{feedbackError && <p className="feedback-list-error" role="alert">{feedbackError}</p>}{feedbackItems.length > 0 && <div className="feedback-summary"><div className="feedback-summary-score"><strong>{feedbackAverage.toFixed(1)}</strong><span>out of 5 · {feedbackItems.length} recent responses</span><div>{[1, 2, 3, 4, 5].map((star) => <Star key={star} size={15} fill={feedbackAverage >= star ? 'currentColor' : 'none'} />)}</div></div><div className="feedback-rating-distribution">{feedbackRatingCounts.map(({ rating, count }) => <div key={rating}><span>{rating} <Star size={11} fill="currentColor" /></span><i><b style={{ width: `${feedbackItems.length ? count / feedbackItems.length * 100 : 0}%` }} /></i><small>{count}</small></div>)}</div></div>}{feedbackItems.length ? <div className="feedback-list">{feedbackItems.map((item) => <article className="feedback-card" key={item.id}><header><div><span className="kitchen-table">TABLE #{String(item.tableNumber).padStart(2, '0')}</span><h3>{item.customerName || 'Guest'}</h3></div><time>{item.createdAt ? new Date(item.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}</time></header><div className="feedback-stars" aria-label={`${item.rating} out of 5 stars`}>{[1, 2, 3, 4, 5].map((star) => <Star key={star} size={14} fill={star <= item.rating ? 'currentColor' : 'none'} />)}</div><p>{item.comment || 'No written comment.'}</p></article>)}</div> : !feedbackError && <div className="empty-state"><span>💬</span><b>No feedback just yet</b><p>Guest comments will appear here after they share their visit.</p></div>}</section>}
       </div>
       {showQrCodes && <TableQrModal onClose={() => setShowQrCodes(false)} />}
     </main>
