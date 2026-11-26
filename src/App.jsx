@@ -21,6 +21,15 @@ const EMPTY_TABLES = initialTables()
 const activeCalls = (table) => (Array.isArray(table?.calls) ? table.calls : []).filter((call) => call && !call.resolved)
 const activeOrders = (table) => (Array.isArray(table?.orders) ? table.orders : []).filter((order) => order && order.status !== 'Confirmed Served')
 const formatCooldown = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+const feedbackStorageKey = (sessionId) => `dineplay-feedback-${sessionId}`
+const hasSubmittedFeedback = (sessionId) => {
+  if (!sessionId) return false
+  try {
+    return localStorage.getItem(feedbackStorageKey(sessionId)) === 'sent'
+  } catch {
+    return false
+  }
+}
 const readStoredGuest = () => {
   try {
     const stored = JSON.parse(sessionStorage.getItem('dineplay-guest-session') || 'null')
@@ -29,15 +38,6 @@ const readStoredGuest = () => {
       : null
   } catch {
     return null
-  }
-  const feedbackStorageKey = (sessionId) => `dineplay-feedback-${sessionId}`
-  const hasSubmittedFeedback = (sessionId) => {
-    if (!sessionId) return false
-    try {
-      return localStorage.getItem(feedbackStorageKey(sessionId)) === 'sent'
-    } catch {
-      return false
-    }
   }
 }
 const orderStatusLabel = (status) => status === 'Received'
